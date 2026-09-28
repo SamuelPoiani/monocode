@@ -25,12 +25,11 @@ export type OrchestrationWorkspace = {
   kind: "main" | "worktree";
   branch?: string;
   /**
-   * Repository checkout a worker worktree was seeded from and integrates
-   * into. Absent means the run checkout itself; set when the run checkout is
-   * a plain folder holding several repositories.
+   * Nested repository a worker worktree was seeded from and integrates into,
+   * relative to the run checkout (e.g. "packages/api"). Absent means the run
+   * checkout itself; set when the run checkout is a plain folder holding
+   * several repositories.
    */
-  baseCwd?: string;
-  /** Path of baseCwd relative to the run checkout, e.g. "packages/api". */
   basePrefix?: string;
 };
 
@@ -158,7 +157,10 @@ export const orchestrationCheckoutCwd = (run: OrchestrationRun) =>
 export const orchestrationWorkerBaseCwd = (
   run: OrchestrationRun,
   task: Pick<OrchestrationTask, "workspace">,
-) => task.workspace?.baseCwd ?? orchestrationCheckoutCwd(run);
+) =>
+  task.workspace?.basePrefix
+    ? joinPath(orchestrationCheckoutCwd(run), task.workspace.basePrefix)
+    : orchestrationCheckoutCwd(run);
 
 /**
  * Pick the repository a worker is isolated in. A run checkout that is itself

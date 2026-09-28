@@ -1,4 +1,9 @@
-import { pathKey } from "../../../shared/lib/paths";
+import {
+  isEqualOrInside,
+  joinPath,
+  pathKey,
+  slash,
+} from "../../../shared/lib/paths";
 import type { OrchestrationChoice } from "./orchestrationPlan";
 import type { HarnessId } from "../../sessions/model/session";
 
@@ -24,6 +29,14 @@ export type OrchestrationWorkspace = {
   checkoutCwd: string;
   kind: "main" | "worktree";
   branch?: string;
+  /**
+   * Repository checkout a worker worktree was seeded from and integrates
+   * into. Absent means the run checkout itself; set when the run checkout is
+   * a plain folder holding several repositories.
+   */
+  baseCwd?: string;
+  /** Path of baseCwd relative to the run checkout, e.g. "packages/api". */
+  basePrefix?: string;
 };
 
 export type DispatchState =
@@ -140,6 +153,63 @@ export const orchestrationProjectCwd = (run: OrchestrationRun) =>
 
 export const orchestrationCheckoutCwd = (run: OrchestrationRun) =>
   orchestrationWorkspace(run).checkoutCwd;
+
+/** Checkout a worker's worktree is seeded from, compared with and merged into. */
+export const orchestrationWorkerBaseCwd = (
+  run: OrchestrationRun,
+  task: Pick<OrchestrationTask, "workspace">,
+) => task.workspace?.baseCwd ?? orchestrationCheckoutCwd(run);
+
+/**
+ * Pick the repository a worker is isolated in. A run checkout that is itself
+ * a Git repository keeps the original behavior. A plain folder holding
+ * several repositories isolates each task in the one repository that owns
+ * every file in its write scope.
+ */
+export async function resolveWorkerBase(
+  checkoutCwd: string,
+  files: string[],
+  repoRoot: (cwd: string) => Promise<string | null>,
+): Promise<{ baseCwd: string; basePrefix?: string }> {
+  if (await repoRoot(checkoutCwd)) return { baseCwd: checkoutCwd };
+  const roots = await Promise.all(
+    files.map((file) => repoRoot(joinPath(checkoutCwd, file))),
+  );
+  const inside = roots.filter(
+    (root): root is string =>
+      !!root &&
+      pathKey(root) !== pathKey(checkoutCwd) &&
+      isEqualOrInside(root, checkoutCwd),
+  );
+  if (!files.length || inside.length !== roots.length)
+    throw new Error(
+      `${checkoutCwd} is not a Git repository, so every file in this task must be inside one of its nested repositories. Assign files such as "<repo>/src" instead of "." or folders outside a repository.`,
+    );
+  const keys = new Set(inside.map(pathKey));
+  if (keys.size > 1)
+    throw new Error(
+      `This task's files span several Git repositories (${inside.join(", ")}). Split it into one task per repository.`,
+    );
+  const baseCwd = inside[0];
+  return {
+    baseCwd,
+    basePrefix: slash(baseCwd).slice(slash(checkoutCwd).replace(/\/+$/, "").length + 1),
+  };
+}
+
+/** Rewrite run-relative files as paths relative to a nested repository. */
+export function workerRelativeFiles(files: string[], basePrefix?: string) {
+  if (!basePrefix) return files;
+  const prefix = pathKey(basePrefix);
+  return files.map((file) => {
+    const normalized = slash(file).replace(/^\.\//, "").replace(/\/+$/, "");
+    const key = pathKey(normalized);
+    if (key === prefix) return ".";
+    return key.startsWith(`${prefix}/`)
+      ? normalized.slice(basePrefix.length + 1)
+      : file;
+  });
+}
 
 export function normalizeOrchestrationRun(
   run: OrchestrationRun,

@@ -39,6 +39,11 @@ export async function createWorktree(
   return tree;
 }
 
+/** Top-level directory of the Git repository containing `cwd`, if any. */
+export function gitRepoRoot(cwd: string) {
+  return invoke<string | null>("git_repo_root", { cwd });
+}
+
 export async function createOrchestrationWorktree(
   cwd: string,
   branch: string,

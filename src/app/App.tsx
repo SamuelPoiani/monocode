@@ -19,10 +19,13 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   orchestrationCheckoutCwd,
   orchestrationProjectCwd,
+  orchestrationWorkerBaseCwd,
   orchestrator,
+  resolveWorkerBase,
   shellPath,
   workspaceIdentity,
   type ControlOutcome,
+  type OrchestrationWorkspace,
 } from "../features/orchestration/model/orchestration";
 import { modelsFor } from "../features/sessions/model/models";
 import { isHarnessAvailable } from "../integrations/harness/core/availability";
@@ -78,6 +81,7 @@ import {
   createWorktree,
   detachSessionWorktree,
   checkWorktreeRemoval,
+  gitRepoRoot,
   listWorktrees,
   namedWorktreeBranch,
   orchestrationWorktreeBranchName,
@@ -8445,11 +8449,20 @@ export default function App({
           (session) => session.id === run.leadId,
         );
         if (!lead) throw new Error("Lead session is unavailable");
+        // A plain folder of several repositories seeds each worker from the
+        // nested repository that owns its files instead of the run checkout.
+        const withBase = (
+          identity: OrchestrationWorkspace,
+          base: { baseCwd: string; basePrefix?: string },
+        ): OrchestrationWorkspace =>
+          base.basePrefix ? { ...identity, ...base } : identity;
         const workspace =
           task.workspacePolicy === "shared"
             ? workspaceIdentity(projectCwd, leadCheckoutCwd)
             : task.workspace
-              ? await listWorktrees(leadCheckoutCwd).then((listed) => {
+              ? await listWorktrees(
+                  orchestrationWorkerBaseCwd(run, task),
+                ).then((listed) => {
                   const tree = listed.worktrees.find(
                     (entry) =>
                       pathKey(entry.path) ===
@@ -8459,20 +8472,35 @@ export default function App({
                     throw new Error(
                       "This worker's retained worktree is missing. Its saved changes cannot be retried automatically.",
                     );
-                  return workspaceIdentity(
-                    projectCwd,
-                    tree.path,
-                    tree.branch ?? task.workspace!.branch,
+                  return withBase(
+                    workspaceIdentity(
+                      projectCwd,
+                      tree.path,
+                      tree.branch ?? task.workspace!.branch,
+                    ),
+                    {
+                      baseCwd: orchestrationWorkerBaseCwd(run, task),
+                      basePrefix: task.workspace!.basePrefix,
+                    },
                   );
                 })
-              : await createOrchestrationWorktree(
+              : await resolveWorkerBase(
                   leadCheckoutCwd,
-                  orchestrationWorktreeBranchName(task.id),
-                ).then((tree) =>
-                  workspaceIdentity(
-                    projectCwd,
-                    tree.path,
-                    tree.branch ?? undefined,
+                  task.files,
+                  gitRepoRoot,
+                ).then((base) =>
+                  createOrchestrationWorktree(
+                    base.baseCwd,
+                    orchestrationWorktreeBranchName(task.id),
+                  ).then((tree) =>
+                    withBase(
+                      workspaceIdentity(
+                        projectCwd,
+                        tree.path,
+                        tree.branch ?? undefined,
+                      ),
+                      base,
+                    ),
                   ),
                 );
         const checkoutCwd = workspace.checkoutCwd;
@@ -8588,12 +8616,13 @@ export default function App({
         await invoke("harness_kill", { sessionId: task.sessionId });
         await invoke("control_turn_finished", { sessionId: task.sessionId });
         await flushSessionCheckpoint(task.sessionId);
-        const listed = await listWorktrees(orchestrationCheckoutCwd(run));
+        const baseCwd = orchestrationWorkerBaseCwd(run, task);
+        const listed = await listWorktrees(baseCwd);
         const workerTree = listed.worktrees.find((tree) =>
           sameProjectPath(tree.path, fromCwd),
         );
         const leadTree = listed.worktrees.find((tree) =>
-          sameProjectPath(tree.path, orchestrationCheckoutCwd(run)),
+          sameProjectPath(tree.path, baseCwd),
         );
         if (!workerTree || !leadTree)
           throw new Error(
@@ -8603,18 +8632,15 @@ export default function App({
           throw new Error(
             "The worker or lead branch moved while this task was running. The worker worktree was kept for manual review.",
           );
-        return applySessionCheckpoint(
-          task.sessionId,
-          fromCwd,
-          orchestrationCheckoutCwd(run),
-        );
+        return applySessionCheckpoint(task.sessionId, fromCwd, baseCwd);
       },
       cleanupWorker: async (run, task, onlyIfUnchanged) => {
         const workspace = task.workspace;
         if (!workspace || workspace.kind !== "worktree") return true;
         const path = workspace.checkoutCwd;
+        const baseCwd = orchestrationWorkerBaseCwd(run, task);
         await flushSessionCheckpoint(task.sessionId);
-        const listed = await listWorktrees(orchestrationCheckoutCwd(run));
+        const listed = await listWorktrees(baseCwd);
         const exists = listed.worktrees.some(
           (tree) => pathKey(tree.path) === pathKey(path),
         );
@@ -8623,7 +8649,7 @@ export default function App({
           (tree) => pathKey(tree.path) === pathKey(path),
         );
         const leadTree = listed.worktrees.find((tree) =>
-          sameProjectPath(tree.path, orchestrationCheckoutCwd(run)),
+          sameProjectPath(tree.path, baseCwd),
         );
         if (
           exists &&
@@ -8643,7 +8669,7 @@ export default function App({
           await applySessionCheckpoint(
             task.sessionId,
             path,
-            orchestrationCheckoutCwd(run),
+            baseCwd,
           );
         }
 
@@ -8666,7 +8692,7 @@ export default function App({
           await flushSessionWrites();
           checkOpenWorktreeFiles(path);
           const removed = await removeOrchestrationWorktree(
-            orchestrationCheckoutCwd(run),
+            baseCwd,
             path,
           );
           const affected = new Set([task.sessionId, ...removed.sessionIds]);
@@ -8707,7 +8733,7 @@ export default function App({
         }
         if (workspace.branch)
           await removeOrchestrationBranch(
-            orchestrationCheckoutCwd(run),
+            baseCwd,
             workspace.branch,
           );
         await forgetSessionCheckpoint(task.sessionId);

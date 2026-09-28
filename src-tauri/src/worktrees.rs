@@ -154,6 +154,26 @@ pub fn git_worktrees(cwd: String, store: State<'_, SessionStore>) -> Result<Work
     })
 }
 
+/// Top-level directory of the Git repository containing `path`, or `None`
+/// when it is not inside one. A path that does not exist yet (a new file in a
+/// write scope) resolves through its nearest existing ancestor.
+fn repo_root(path: &Path) -> Option<String> {
+    let mut existing = path;
+    while !existing.is_dir() {
+        existing = existing.parent()?;
+    }
+    let top = git(existing, &["rev-parse", "--show-toplevel"]).ok()?;
+    let top = top.trim();
+    (!top.is_empty()).then(|| path_to_js(Path::new(top)))
+}
+
+#[tauri::command(async)]
+pub async fn git_repo_root(cwd: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || repo_root(&expand_home(&cwd)))
+        .await
+        .map_err(|error| error.to_string())
+}
+
 fn create(root: &Path, branch: &str, base: &str, existing: bool) -> Result<Worktree, String> {
     let branch = branch.trim();
     if branch.starts_with('-') || branch.starts_with('@') || branch.is_empty() {

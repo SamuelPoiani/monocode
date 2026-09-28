@@ -14,6 +14,7 @@ import {
   normalizeOrchestrationRun,
   orchestrationCheckoutCwd,
   orchestrationWorkspace,
+  workerRelativeFiles,
   workspaceIdentity,
   type OrchestrationDispatch,
   type OrchestrationRun,
@@ -24,7 +25,9 @@ import {
 export {
   orchestrationCheckoutCwd,
   orchestrationProjectCwd,
+  orchestrationWorkerBaseCwd,
   orchestrationWorkspace,
+  resolveWorkerBase,
   workspaceIdentity,
 } from "./orchestrationState";
 export type {
@@ -167,11 +170,16 @@ export function workerTurnPrompt(
   prompt: string,
   files: string[],
   scratchDir?: string,
+  basePrefix?: string,
 ): string {
+  const nested = basePrefix
+    ? ` Your checkout is an isolated copy of the nested Git repository at ${JSON.stringify(basePrefix)} in the project, and your working directory is that repository's root. Paths in the task text that start with ${JSON.stringify(`${basePrefix}/`)} are relative to the project; drop that prefix inside your checkout. Your write scope below is already relative to your checkout.`
+    : "";
+  files = workerRelativeFiles(files, basePrefix);
   const scratch = scratchDir
     ? ` Temporary helpers and test output may be written in your private scratch directory: ${JSON.stringify(scratchDir)}. TMPDIR, TMP and TEMP point there. Use this directory for scratch files; do not write elsewhere outside the project. Deliver final changes in your assigned project files.`
     : "";
-  return `${prompt}\n\n<monocode_assignment>\nYou are a worker managed by a MonoCode lead. Work only in the checkout selected for this run. The workspace, scope and Git rules in this assignment envelope override any contradictory wording in the task text above. Your assigned write scope is: ${files.join(", ")}.${scratch} Read other files as needed, but do not edit outside your scope. If another file or shared operation is needed, report the blocker and stop so the lead can expand or create a new assignment. Do not spawn agents, create worktrees, switch branches, stage, commit, push, install dependencies or run broad formatters/generators. A task owning '.' may run explicitly requested project-wide validation or generation, but Git finalization remains the lead's responsibility after integration. Other workers may be working concurrently in separate checkouts; do not rely on their work until the lead has accepted it. Report focused checks, changed files, remaining issues and a concise final result.\n</monocode_assignment>`;
+  return `${prompt}\n\n<monocode_assignment>\nYou are a worker managed by a MonoCode lead. Work only in the checkout selected for this run.${nested} The workspace, scope and Git rules in this assignment envelope override any contradictory wording in the task text above. Your assigned write scope is: ${files.join(", ")}.${scratch} Read other files as needed, but do not edit outside your scope. If another file or shared operation is needed, report the blocker and stop so the lead can expand or create a new assignment. Do not spawn agents, create worktrees, switch branches, stage, commit, push, install dependencies or run broad formatters/generators. A task owning '.' may run explicitly requested project-wide validation or generation, but Git finalization remains the lead's responsibility after integration. Other workers may be working concurrently in separate checkouts; do not rely on their work until the lead has accepted it. Report focused checks, changed files, remaining issues and a concise final result.\n</monocode_assignment>`;
 }
 
 /** Task text a person should see: the assignment envelope stays in the send. */
@@ -1548,7 +1556,7 @@ export class Orchestrator {
             const preparedRun = this.run(run.leadId)!;
             const writeScopes = await this.store.scopes(
               prepared.workspace.checkoutCwd,
-              task.files,
+              workerRelativeFiles(task.files, prepared.workspace.basePrefix),
             );
             await this.commit({
               ...preparedRun,
@@ -1583,6 +1591,7 @@ export class Orchestrator {
               task.recoveryPrompt ?? task.prompt,
               task.files,
               prepared.scratchDir,
+              prepared.workspace.basePrefix,
             );
             this.host.submit(task.sessionId, prompt, (outcome) => {
               void this.settle(run.leadId, task.id, outcome, dispatchId).catch(

@@ -81,7 +81,7 @@ import {
   createWorktree,
   detachSessionWorktree,
   checkWorktreeRemoval,
-  gitRepoRoot,
+  gitRepoPrefix,
   listWorktrees,
   namedWorktreeBranch,
   orchestrationWorktreeBranchName,
@@ -6378,9 +6378,16 @@ export default function App({
         launchTitleGeneration(workCwd);
         if (turnGen.current.get(sessionId) !== gen) return;
         if (proposalDraft && proposalId) {
-          const settings = await discoverOrchestrationSettings();
+          const [settings, repoPrefix] = await Promise.all([
+            discoverOrchestrationSettings(),
+            gitRepoPrefix(workCwd, "."),
+          ]);
           if (turnGen.current.get(sessionId) !== gen) return;
-          proposalDraft = { ...proposalDraft, settings };
+          proposalDraft = {
+            ...proposalDraft,
+            settings,
+            multiRepo: repoPrefix === null || undefined,
+          };
           const discovering = proposalDraft;
           setSessions((prev) =>
             prev.map((session) =>
@@ -6551,6 +6558,7 @@ export default function App({
                   prompt,
                   proposalDraft.settings,
                   proposalDraft.checkoutCwd ?? proposalDraft.cwd,
+                  proposalDraft.multiRepo,
                 )
             : intent === "plan" && !rawCommand
               ? planTurnPrompt(prompt)
@@ -8487,11 +8495,12 @@ export default function App({
               : await resolveWorkerBase(
                   leadCheckoutCwd,
                   task.files,
-                  gitRepoRoot,
+                  gitRepoPrefix,
                 ).then((base) =>
                   createOrchestrationWorktree(
                     base.baseCwd,
                     orchestrationWorktreeBranchName(task.id),
+                    base.basePrefix ? leadCheckoutCwd : undefined,
                   ).then((tree) =>
                     withBase(
                       workspaceIdentity(

@@ -1,9 +1,4 @@
-import {
-  isEqualOrInside,
-  joinPath,
-  pathKey,
-  slash,
-} from "../../../shared/lib/paths";
+import { joinPath, pathKey, slash } from "../../../shared/lib/paths";
 import type { OrchestrationChoice } from "./orchestrationPlan";
 import type { HarnessId } from "../../sessions/model/session";
 
@@ -114,6 +109,11 @@ export type OrchestrationRun = {
   cwd: string;
   workspace?: OrchestrationWorkspace;
   canonicalRoot?: string;
+  /**
+   * The checkout is a plain folder holding several Git repositories; each
+   * worker is isolated in the nested repository that owns its files.
+   */
+  multiRepo?: boolean;
   status: "active" | "paused" | "stopped" | "finished";
   allowedHarnesses: HarnessId[];
   allowedModels?: OrchestrationChoice[];
@@ -169,32 +169,25 @@ export const orchestrationWorkerBaseCwd = (
 export async function resolveWorkerBase(
   checkoutCwd: string,
   files: string[],
-  repoRoot: (cwd: string) => Promise<string | null>,
+  repoPrefix: (root: string, path: string) => Promise<string | null>,
 ): Promise<{ baseCwd: string; basePrefix?: string }> {
-  if (await repoRoot(checkoutCwd)) return { baseCwd: checkoutCwd };
-  const roots = await Promise.all(
-    files.map((file) => repoRoot(joinPath(checkoutCwd, file))),
+  if ((await repoPrefix(checkoutCwd, ".")) !== null)
+    return { baseCwd: checkoutCwd };
+  const prefixes = await Promise.all(
+    files.map((file) => repoPrefix(checkoutCwd, file)),
   );
-  const inside = roots.filter(
-    (root): root is string =>
-      !!root &&
-      pathKey(root) !== pathKey(checkoutCwd) &&
-      isEqualOrInside(root, checkoutCwd),
-  );
-  if (!files.length || inside.length !== roots.length)
+  const nested = prefixes.filter((prefix): prefix is string => !!prefix);
+  if (!files.length || nested.length !== prefixes.length)
     throw new Error(
       `${checkoutCwd} is not a Git repository, so every file in this task must be inside one of its nested repositories. Assign files such as "<repo>/src" instead of "." or folders outside a repository.`,
     );
-  const keys = new Set(inside.map(pathKey));
-  if (keys.size > 1)
+  const repositories = [...new Set(nested)];
+  if (repositories.length > 1)
     throw new Error(
-      `This task's files span several Git repositories (${inside.join(", ")}). Split it into one task per repository.`,
+      `This task's files span several Git repositories (${repositories.join(", ")}). Split it into one task per repository.`,
     );
-  const baseCwd = inside[0];
-  return {
-    baseCwd,
-    basePrefix: slash(baseCwd).slice(slash(checkoutCwd).replace(/\/+$/, "").length + 1),
-  };
+  const basePrefix = repositories[0];
+  return { baseCwd: joinPath(checkoutCwd, basePrefix), basePrefix };
 }
 
 /** Rewrite run-relative files as paths relative to a nested repository. */
@@ -205,9 +198,11 @@ export function workerRelativeFiles(files: string[], basePrefix?: string) {
     const normalized = slash(file).replace(/^\.\//, "").replace(/\/+$/, "");
     const key = pathKey(normalized);
     if (key === prefix) return ".";
-    return key.startsWith(`${prefix}/`)
-      ? normalized.slice(basePrefix.length + 1)
-      : file;
+    if (!key.startsWith(`${prefix}/`))
+      throw new Error(
+        `${JSON.stringify(file)} is outside ${JSON.stringify(basePrefix)}, the nested repository this worker is isolated in. Use files inside that repository, or cancel this task and delegate a new one.`,
+      );
+    return normalized.slice(basePrefix.length + 1);
   });
 }
 

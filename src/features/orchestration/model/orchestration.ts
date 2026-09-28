@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { HARNESSES, type HarnessId, type Session } from "../../sessions/model/session";
-import { pathKey } from "../../../shared/lib/paths";
+import { isEqualOrInside, pathKey } from "../../../shared/lib/paths";
 import type { ApprovalDecision, HarnessEvent } from "../../../integrations/harness/core/types";
 import { pendingApprovalForSession } from "../../notifications/model/approvalToast";
 import type { UserQuestionReply } from "../../sessions/model/userQuestion";
@@ -14,6 +14,7 @@ import {
   normalizeOrchestrationRun,
   orchestrationCheckoutCwd,
   orchestrationWorkspace,
+  resolveWorkerBase,
   workerRelativeFiles,
   workspaceIdentity,
   type OrchestrationDispatch,
@@ -90,6 +91,8 @@ type Storage = {
   disable(id: string): Promise<void>;
   scopes(cwd: string, files: string[]): Promise<string[]>;
   resolvePath(path: string): Promise<string>;
+  /** Where the repository owning `path` sits in `root`: "" for root's own, null for none. */
+  repoPrefix(root: string, path: string): Promise<string | null>;
 };
 const storage: Storage = {
   save: (run) =>
@@ -110,6 +113,7 @@ const storage: Storage = {
   disable: (sessionId) => invoke("control_disable", { sessionId }),
   scopes: (cwd, files) => invoke("control_scopes", { cwd, files }),
   resolvePath: (path) => invoke("control_write_path", { path }),
+  repoPrefix: (root, path) => invoke("git_repo_prefix", { root, path }),
 };
 
 /**
@@ -156,6 +160,15 @@ const activeTask = (task: OrchestrationTask) =>
   task.status === "running" || task.status === "cancelling";
 export const sameCheckout = (a: string, b: string) =>
   pathKey(a.replace(/\\/g, "/")) === pathKey(b.replace(/\\/g, "/"));
+/** A multi-repository run also integrates into every repository nested in its folder. */
+export const inRunCheckout = (
+  checkoutCwd: string,
+  cwd: string,
+  multiRepo?: boolean,
+) =>
+  multiRepo
+    ? isEqualOrInside(cwd, checkoutCwd)
+    : sameCheckout(checkoutCwd, cwd);
 const messageOf = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 
@@ -319,7 +332,11 @@ export class Orchestrator {
         run.leadId === id || run.tasks.some((task) => task.sessionId === id),
     );
   }
-  resumeBlocker(leadId: string, checkoutCwd?: string): Session | undefined {
+  resumeBlocker(
+    leadId: string,
+    checkoutCwd?: string,
+    multiRepo = this.run(leadId)?.multiRepo,
+  ): Session | undefined {
     const lead = this.host?.session(leadId);
     if (!lead) return undefined;
     const cwd =
@@ -333,7 +350,7 @@ export class Orchestrator {
         (session) =>
           session.id !== leadId &&
           session.busy &&
-          sameCheckout(session.worktreeCwd ?? session.cwd, cwd),
+          inRunCheckout(cwd, session.worktreeCwd ?? session.cwd, multiRepo),
       );
   }
   resumeLeadBusy(leadId: string): boolean {
@@ -630,6 +647,17 @@ export class Orchestrator {
         "An assigned model is no longer available. Change that assignment before starting.",
       );
     const ids = new Map(planned.map((task) => [task.id, crypto.randomUUID()]));
+    await Promise.all(
+      planned.map((task) =>
+        resolveWorkerBase(
+          lead.worktreeCwd ?? lead.cwd,
+          task.files,
+          this.store.repoPrefix,
+        ).catch((error) => {
+          throw new Error(`${task.title}: ${messageOf(error)}`);
+        }),
+      ),
+    );
     const tasks: OrchestrationTask[] = await Promise.all(
       planned.map(async (task) => ({
         ...task,
@@ -726,7 +754,13 @@ export class Orchestrator {
       throw new Error(
         "Return the lead to its original checkout before resuming orchestration",
       );
-    const blocker = this.resumeBlocker(leadId, workspace.checkoutCwd);
+    const multiRepo =
+      (await this.store.repoPrefix(workspace.checkoutCwd, ".")) === null;
+    const blocker = this.resumeBlocker(
+      leadId,
+      workspace.checkoutCwd,
+      multiRepo,
+    );
     if (blocker) {
       const label = blocker.title.trim() || blocker.id;
       throw new Error(
@@ -771,6 +805,7 @@ export class Orchestrator {
         cwd: lead.cwd,
         workspace,
         canonicalRoot,
+        multiRepo: multiRepo || undefined,
         cli,
         status: "active",
         allowedHarnesses: [...new Set(allowedHarnesses)],
@@ -815,9 +850,10 @@ export class Orchestrator {
       (run) =>
         (run.status === "active" || run.tasks.some(activeTask)) &&
         run.leadId !== id &&
-        sameCheckout(
+        inRunCheckout(
           orchestrationCheckoutCwd(run),
           session.worktreeCwd ?? session.cwd,
+          run.multiRepo,
         ),
     );
     if (other)
@@ -838,7 +874,10 @@ export class Orchestrator {
     const run = this.run(id);
     if (!run || run.status !== "active") return prompt;
     const cli = `${shellPath(run.cli)} control`;
-    return `${prompt}\n\n<monocode_orchestration>\nYou are the lead of a local MonoCode run. Coordinate the user's task using ${cli}. Run \`${cli} --help\` before your first command; it documents every action, its exact JSON fields and the retry rule. Credentials are already in your environment; never print them.\nEach call prints one JSON line and exits non-zero unless "ok" is true; read the "error" text, it says what to do next. Unknown JSON fields are rejected rather than ignored, so fix the field name instead of guessing. If a call fails before reaching MonoCode, retry it with the "requestId" from that response so the work is never queued twice.\nUse list to discover allowed harness/model IDs. Delegate bounded tasks with project-relative files (directories reserve their descendants), self-contained prompts and dependsOn task IDs. Use the checkout selected for this run. You may read and plan; leave project file edits to workers. Never start workers outside this CLI. Workers with overlapping files are queued. For project-wide validation, generators or broad formatting, assign a separate task with files ["."] and wait for other workers to finish. Workers must never commit, push, switch branches or write outside the selected checkout. If the user requested those final operations, review and integrate every worker, call finish, then perform the explicitly authorized finalization yourself from the lead checkout.\nAgents never prompt the user. When one needs an approval or answers a question, list, get and wait report it as needsInput on that task, and you decide with respond or answer; it stays stopped until you do. Judge the request against the task you assigned, and put it to the user in this conversation only when the call is genuinely theirs.\nSteer a running agent with steer to correct its course without losing its work; use message only once it has stopped. Read results with get or wait; completed means a turn finished, not that the work passed review. Review the actual changes, message a worker for fixes, and use review to accept each completed task. A scope-blocked worker is isolated to that task: use message if it should stay within its existing scope, retry with corrected project-relative files if the assignment was too narrow, or cancel it if no longer needed. Never expand scope merely to excuse an unexpected write. Call finish only when required work and combined validation are complete. You receive worker results automatically when idle; use bounded wait calls while supervising. If the run is paused, list/get/wait remain readable and explain the reason. Stop polling, report that reason, and ask the user to click Resume; Resume automatically continues interrupted workers from their retained checkouts. Do not expose credentials, create worktrees, switch branches or silently escalate worker permissions.\n</monocode_orchestration>`;
+    const validation = run.multiRepo
+      ? `This checkout is a plain folder holding several Git repositories, and each worker is isolated in a copy of one of them: every task's files must stay inside a single nested repository (for example ["api/src"]); ["."] and tasks spanning repositories are rejected. For repository-wide validation, generators or broad formatting, assign a separate task whose files are that repository's folder, such as ["api"], and wait for its other workers to finish. Run cross-repository validation yourself after integrating the workers, and perform any authorized Git finalization in each affected repository.`
+      : `For project-wide validation, generators or broad formatting, assign a separate task with files ["."] and wait for other workers to finish.`;
+    return `${prompt}\n\n<monocode_orchestration>\nYou are the lead of a local MonoCode run. Coordinate the user's task using ${cli}. Run \`${cli} --help\` before your first command; it documents every action, its exact JSON fields and the retry rule. Credentials are already in your environment; never print them.\nEach call prints one JSON line and exits non-zero unless "ok" is true; read the "error" text, it says what to do next. Unknown JSON fields are rejected rather than ignored, so fix the field name instead of guessing. If a call fails before reaching MonoCode, retry it with the "requestId" from that response so the work is never queued twice.\nUse list to discover allowed harness/model IDs. Delegate bounded tasks with project-relative files (directories reserve their descendants), self-contained prompts and dependsOn task IDs. Use the checkout selected for this run. You may read and plan; leave project file edits to workers. Never start workers outside this CLI. Workers with overlapping files are queued. ${validation} Workers must never commit, push, switch branches or write outside the selected checkout. If the user requested those final operations, review and integrate every worker, call finish, then perform the explicitly authorized finalization yourself from the lead checkout.\nAgents never prompt the user. When one needs an approval or answers a question, list, get and wait report it as needsInput on that task, and you decide with respond or answer; it stays stopped until you do. Judge the request against the task you assigned, and put it to the user in this conversation only when the call is genuinely theirs.\nSteer a running agent with steer to correct its course without losing its work; use message only once it has stopped. Read results with get or wait; completed means a turn finished, not that the work passed review. Review the actual changes, message a worker for fixes, and use review to accept each completed task. A scope-blocked worker is isolated to that task: use message if it should stay within its existing scope, retry with corrected project-relative files if the assignment was too narrow, or cancel it if no longer needed. Never expand scope merely to excuse an unexpected write. Call finish only when required work and combined validation are complete. You receive worker results automatically when idle; use bounded wait calls while supervising. If the run is paused, list/get/wait remain readable and explain the reason. Stop polling, report that reason, and ask the user to click Resume; Resume automatically continues interrupted workers from their retained checkouts. Do not expose credentials, create worktrees, switch branches or silently escalate worker permissions.\n</monocode_orchestration>`;
   }
   async handle(
     leadId: string,
@@ -1062,7 +1101,9 @@ export class Orchestrator {
         const files = strings(input.files, "files");
         if (!files.length)
           throw new Error(
-            "Declare at least one file/directory scope in files, or '.' for exclusive checkout access",
+            run.multiRepo
+              ? 'Declare at least one file/directory scope in files, inside one nested repository such as "api/src"'
+              : "Declare at least one file/directory scope in files, or '.' for exclusive checkout access",
           );
         const dependsOn = strings(input.dependsOn ?? [], "dependsOn", 40);
         const missing = dependsOn.filter(
@@ -1078,6 +1119,11 @@ export class Orchestrator {
         const scopes = await this.store.scopes(
           orchestrationCheckoutCwd(run),
           files,
+        );
+        await resolveWorkerBase(
+          orchestrationCheckoutCwd(run),
+          files,
+          this.store.repoPrefix,
         );
         const created: OrchestrationTask = {
           id: crypto.randomUUID(),
@@ -1160,13 +1206,25 @@ export class Orchestrator {
         const files = strings(input.files, "files");
         if (!files.length)
           throw new Error(
-            "Declare at least one corrected project-relative file/directory scope, or '.' for the whole checkout",
+            run.multiRepo
+              ? 'Declare at least one corrected project-relative file/directory scope inside one nested repository, such as "api/src"'
+              : "Declare at least one corrected project-relative file/directory scope, or '.' for the whole checkout",
           );
         const current = this.run(run.leadId)!;
         const scopes = await this.store.scopes(
           orchestrationCheckoutCwd(current),
           files,
         );
+        const { basePrefix } = await resolveWorkerBase(
+          orchestrationCheckoutCwd(current),
+          files,
+          this.store.repoPrefix,
+        );
+        // The retry resumes the retained checkout, a copy of one repository.
+        if (target.workspace && target.workspace.basePrefix !== basePrefix)
+          throw new Error(
+            `${target.title}'s retained checkout is a copy of the ${JSON.stringify(target.workspace.basePrefix)} repository. Retry it with files inside that repository, or cancel it and delegate a new task for ${JSON.stringify(basePrefix)}.`,
+          );
         return changeTask(
           target.id,
           {

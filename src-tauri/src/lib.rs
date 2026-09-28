@@ -367,7 +367,7 @@ pub fn run() {
             fs::git_create_branch,
             fs::git_stash,
             worktrees::git_worktrees,
-            worktrees::git_repo_root,
+            worktrees::git_repo_prefix,
             worktrees::git_worktree_create,
             worktrees::git_orchestration_worktree_create,
             worktrees::git_worktree_rename_branch,

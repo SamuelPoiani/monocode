@@ -30,6 +30,7 @@ function setup() {
       files.map((file) => (file === "." ? cwd : `${cwd}/${file}`)),
     ),
     resolvePath: vi.fn(async (path: string) => path),
+    repoPrefix: vi.fn(async (): Promise<string | null> => ""),
   };
   const manager = new Orchestrator(store);
   const lead = { ...newSession("claude", "/repo"), id: "lead", busy: true };

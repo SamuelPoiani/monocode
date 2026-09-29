@@ -30,6 +30,7 @@ function setup() {
       files.map((file) => (file === "." ? cwd : `${cwd}/${file}`)),
     ),
     resolvePath: vi.fn(async (path: string) => path),
+    repoPrefix: vi.fn(async (): Promise<string | null> => ""),
   };
   const manager = new Orchestrator(store);
   const lead = { ...newSession("claude", "/repo"), id: "lead", busy: true };
@@ -179,6 +180,30 @@ describe("local orchestration", () => {
     expect(f.tasks()).toEqual([]);
     expect(f.manager.forSession(task.sessionId)).toBeUndefined();
     expect(f.store.save).not.toHaveBeenCalled();
+  });
+
+  it("records checkpoints for isolated workers but not leads or shared workers", async () => {
+    const f = setup();
+    expect(f.manager.recordsCheckpoints("lead")).toBe(true);
+    await f.start();
+    await f.delegate(["src"]);
+    await vi.waitFor(() => expect(f.tasks()[0].workspace).toBeDefined());
+    const task = f.tasks()[0];
+    // Integration applies this worker's checkpoint, so its turns must record one.
+    expect(f.manager.recordsCheckpoints(task.sessionId)).toBe(true);
+    expect(f.manager.recordsCheckpoints("lead")).toBe(false);
+    expect(f.manager.recordsCheckpoints("unrelated")).toBe(true);
+
+    const shared = setup();
+    const legacy = structuredClone(f.saved.get("lead")!);
+    shared.saved.set("lead", {
+      ...legacy,
+      version: 1,
+      tasks: legacy.tasks.map(({ workspacePolicy: _, ...entry }) => entry),
+    });
+    await shared.manager.hydrate("lead");
+    expect(shared.tasks()[0].workspacePolicy).toBe("shared");
+    expect(shared.manager.recordsCheckpoints(task.sessionId)).toBe(false);
   });
 
   const proposal = (): OrchestrationProposal => ({

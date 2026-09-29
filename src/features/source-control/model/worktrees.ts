@@ -39,13 +39,24 @@ export async function createWorktree(
   return tree;
 }
 
+/**
+ * Where the Git repository owning `path` (relative to `root`) sits inside
+ * `root`: "" when root is itself inside it, null when there is none.
+ */
+export function gitRepoPrefix(root: string, path: string) {
+  return invoke<string | null>("git_repo_prefix", { root, path });
+}
+
+/** `project` is the plain folder a nested repository `cwd` belongs to. */
 export async function createOrchestrationWorktree(
   cwd: string,
   branch: string,
+  project?: string,
 ) {
   const tree = await invoke<Worktree>("git_orchestration_worktree_create", {
     cwd,
     branch,
+    project,
   });
   notifyGitChanged();
   return tree;

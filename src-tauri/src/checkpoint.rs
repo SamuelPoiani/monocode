@@ -2025,6 +2025,40 @@ mod tests {
     }
 
     #[test]
+    fn isolated_worker_integrates_a_new_untracked_file() {
+        let source = tmp("apply-new-source");
+        let target = tmp("apply-new-target");
+        if !init_git_commit(&source.0, &[("a.txt", "head\n")]) {
+            return;
+        }
+        let source_path = source.0.to_string_lossy().into_owned();
+        let target_path = target.0.to_string_lossy().into_owned();
+        if !git(&source.0, &["clone", &source_path, &target_path]) {
+            return;
+        }
+        let from = source.0.to_string_lossy().into_owned();
+        let to = target.0.to_string_lossy().into_owned();
+        let (_root, store) = store();
+
+        store.ensure("worker", &from).unwrap();
+        store
+            .prepare("worker", &from, &["smoke/marker.txt".into()])
+            .unwrap();
+        std::fs::create_dir_all(source.0.join("smoke")).unwrap();
+        std::fs::write(source.0.join("smoke/marker.txt"), "marker\n").unwrap();
+        store
+            .capture("worker", &from, &["smoke/marker.txt".into()])
+            .unwrap();
+
+        let applied = store.apply("worker", &from, &to).unwrap();
+        assert_eq!(applied.files, ["smoke/marker.txt"]);
+        assert_eq!(
+            std::fs::read_to_string(target.0.join("smoke/marker.txt")).unwrap(),
+            "marker\n"
+        );
+    }
+
+    #[test]
     fn isolated_worker_integration_keeps_both_sides_on_conflict_or_unknown_edit() {
         let source = tmp("apply-conflict-source");
         let target = tmp("apply-conflict-target");

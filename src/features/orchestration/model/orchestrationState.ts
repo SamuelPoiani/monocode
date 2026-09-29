@@ -1,4 +1,4 @@
-import { pathKey } from "../../../shared/lib/paths";
+import { joinPath, pathKey, slash } from "../../../shared/lib/paths";
 import type { OrchestrationChoice } from "./orchestrationPlan";
 import type { HarnessId } from "../../sessions/model/session";
 
@@ -24,6 +24,13 @@ export type OrchestrationWorkspace = {
   checkoutCwd: string;
   kind: "main" | "worktree";
   branch?: string;
+  /**
+   * Nested repository a worker worktree was seeded from and integrates into,
+   * relative to the run checkout (e.g. "packages/api"). Absent means the run
+   * checkout itself; set when the run checkout is a plain folder holding
+   * several repositories.
+   */
+  basePrefix?: string;
 };
 
 export type DispatchState =
@@ -101,6 +108,11 @@ export type OrchestrationRun = {
   cwd: string;
   workspace?: OrchestrationWorkspace;
   canonicalRoot?: string;
+  /**
+   * The checkout is a plain folder holding several Git repositories; each
+   * worker is isolated in the nested repository that owns its files.
+   */
+  multiRepo?: boolean;
   status: "active" | "paused" | "stopped" | "finished";
   allowedHarnesses: HarnessId[];
   allowedModels?: OrchestrationChoice[];
@@ -140,6 +152,61 @@ export const orchestrationProjectCwd = (run: OrchestrationRun) =>
 
 export const orchestrationCheckoutCwd = (run: OrchestrationRun) =>
   orchestrationWorkspace(run).checkoutCwd;
+
+/** Checkout a worker's worktree is seeded from, compared with and merged into. */
+export const orchestrationWorkerBaseCwd = (
+  run: OrchestrationRun,
+  task: Pick<OrchestrationTask, "workspace">,
+) =>
+  task.workspace?.basePrefix
+    ? joinPath(orchestrationCheckoutCwd(run), task.workspace.basePrefix)
+    : orchestrationCheckoutCwd(run);
+
+/**
+ * Pick the repository a worker is isolated in. A run checkout that is itself
+ * a Git repository keeps the original behavior. A plain folder holding
+ * several repositories isolates each task in the one repository that owns
+ * every file in its write scope.
+ */
+export async function resolveWorkerBase(
+  checkoutCwd: string,
+  files: string[],
+  repoPrefix: (root: string, path: string) => Promise<string | null>,
+): Promise<{ baseCwd: string; basePrefix?: string }> {
+  if ((await repoPrefix(checkoutCwd, ".")) !== null)
+    return { baseCwd: checkoutCwd };
+  const prefixes = await Promise.all(
+    files.map((file) => repoPrefix(checkoutCwd, file)),
+  );
+  const nested = prefixes.filter((prefix): prefix is string => !!prefix);
+  if (!files.length || nested.length !== prefixes.length)
+    throw new Error(
+      `${checkoutCwd} is not a Git repository, so every file in this task must be inside one of its nested repositories. Assign files such as "<repo>/src" instead of "." or folders outside a repository.`,
+    );
+  const repositories = [...new Set(nested)];
+  if (repositories.length > 1)
+    throw new Error(
+      `This task's files span several Git repositories (${repositories.join(", ")}). Split it into one task per repository.`,
+    );
+  const basePrefix = repositories[0];
+  return { baseCwd: joinPath(checkoutCwd, basePrefix), basePrefix };
+}
+
+/** Rewrite run-relative files as paths relative to a nested repository. */
+export function workerRelativeFiles(files: string[], basePrefix?: string) {
+  if (!basePrefix) return files;
+  const prefix = pathKey(basePrefix);
+  return files.map((file) => {
+    const normalized = slash(file).replace(/^\.\//, "").replace(/\/+$/, "");
+    const key = pathKey(normalized);
+    if (key === prefix) return ".";
+    if (!key.startsWith(`${prefix}/`))
+      throw new Error(
+        `${JSON.stringify(file)} is outside ${JSON.stringify(basePrefix)}, the nested repository this worker is isolated in. Use files inside that repository, or cancel this task and delegate a new one.`,
+      );
+    return normalized.slice(basePrefix.length + 1);
+  });
+}
 
 export function normalizeOrchestrationRun(
   run: OrchestrationRun,

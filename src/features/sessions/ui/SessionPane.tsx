@@ -12,9 +12,9 @@ import {
 import { Composer } from "./Composer";
 import type { Worktree } from "../../source-control/model/worktrees";
 import {
+  inRunCheckout,
   orchestrationCheckoutCwd,
   orchestrator,
-  sameCheckout,
 } from "../../orchestration/model/orchestration";
 import { DiscussionEmpty } from "./DiscussionEmpty";
 import { LinkedWorkItemUpdateNotice } from "../../inbox/ui/LinkedWorkItemUpdateNotice";
@@ -281,7 +281,11 @@ export const SessionPane = memo(function SessionPane({
   const managed = orchestrationRuns.some(
     (run) =>
       (run.status === "active" || run.status === "paused") &&
-      sameCheckout(orchestrationCheckoutCwd(run), sessionWorkCwd(session)),
+      inRunCheckout(
+        orchestrationCheckoutCwd(run),
+        sessionWorkCwd(session),
+        run.multiRepo,
+      ),
   );
   const title = sessionDisplayTitle(session.title, session.harness);
   const isEmpty = session.blocks.length === 0;

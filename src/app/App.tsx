@@ -100,6 +100,7 @@ import {
 } from "../features/source-control/model/worktrees";
 import { UsageFooter } from "./shell/UsageFooter";
 import { useProjectBranches } from "../features/source-control/hooks/useProjectBranches";
+import { useNestedGitRepos } from "../features/source-control/hooks/useNestedGitRepos";
 import { useInboxActivity } from "../features/inbox/hooks/useInboxUnseen";
 import {
   loadProjectRailOpen,
@@ -1496,8 +1497,25 @@ export default function App({
     sidebarCwdKey != null &&
     !loadedProjects.has(sidebarCwdKey) &&
     !historyFailed;
-  const gitCwd =
-    activeFile?.cwd ?? (active ? sessionWorkCwd(active) : sidebarCwd);
+  // A plain project folder shows one of its nested repositories in Changes;
+  // a diff tab from one of them keeps the explorer on the project folder.
+  const nestedChangesRoot = activeFile
+    ? activeFile.projectCwd ?? activeFile.cwd
+    : active
+      ? sessionWorkCwd(active)
+      : sidebarCwd;
+  const nestedChanges = useNestedGitRepos(
+    nestedChangesRoot,
+    activeFile?.cwd,
+    !isRemoteProjectPath(sidebarCwd),
+  );
+  const gitCwd = nestedChanges.focused
+    ? nestedChangesRoot
+    : activeFile?.cwd ?? (active ? sessionWorkCwd(active) : sidebarCwd);
+  const nestedChangesRepos =
+    nestedChanges.repos && sameProjectPath(gitCwd, nestedChangesRoot)
+      ? nestedChanges.repos
+      : undefined;
   const gitCwdBranches = useProjectBranches(
     gitCwd,
     Boolean(gitCwd) && gitCwd !== "~" && !isRemoteProjectPath(sidebarCwd),
@@ -1518,6 +1536,10 @@ export default function App({
     : gitCwd;
   const gitCwdRef = useRef(filesCwd);
   gitCwdRef.current = filesCwd;
+  const changesCwd =
+    (nestedChangesRepos && nestedChanges.selectedCwd) || filesCwd;
+  const changesCwdRef = useRef(changesCwd);
+  changesCwdRef.current = changesCwd;
   const projectBranches = useProjectBranches(
     sidebarCwd,
     Boolean(sidebarCwd) && sidebarCwd !== "~",
@@ -3495,7 +3517,7 @@ export default function App({
       pin = false,
     ) => {
       void (async () => {
-        const diffCwd = session?.cwd ?? gitCwdRef.current;
+        const diffCwd = session?.cwd ?? changesCwdRef.current;
         const diffProjectCwd = session
           ? sessionsRef.current.find((entry) => entry.id === session.sessionId)
               ?.cwd
@@ -3554,7 +3576,7 @@ export default function App({
         tab.id === activeTabId
           ? openChangesTab(
               tab,
-              gitCwdRef.current,
+              changesCwdRef.current,
               undefined,
               undefined,
               sidebarCwdRef.current,
@@ -3572,7 +3594,7 @@ export default function App({
           tab.id === activeTabId
             ? openCommitTab(
                 tab,
-                gitCwdRef.current,
+                changesCwdRef.current,
                 {
                   sha: commit.sha,
                   shortSha: commit.shortSha,
@@ -10525,6 +10547,10 @@ export default function App({
             <Sidebar
               cwd={sidebarCwd}
               gitCwd={gitCwd}
+              changesCwd={changesCwd}
+              changesRepos={nestedChangesRepos}
+              changesRepo={nestedChanges.selected}
+              onChangesRepoChange={nestedChanges.select}
               explorerRootLabel={explorerRootLabel}
               open={sessionSidebarOpen}
               tab={sidebarTab}
@@ -10575,7 +10601,7 @@ export default function App({
               onOpenAllChanges={onOpenAllChanges}
               onOpenCommit={onOpenCommit}
               selectedDiffPath={
-                activeTab ? selectedChangePath(activeTab, gitCwd) : undefined
+                activeTab ? selectedChangePath(activeTab, changesCwd) : undefined
               }
               selectedDiffKind={
                 activeTab ? selectedChangeKind(activeTab) : undefined

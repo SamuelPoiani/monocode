@@ -4,6 +4,9 @@ import { GitChangesPanel } from "./GitChangesPanel";
 
 type Props = {
   cwd: string;
+  repos?: string[];
+  repo?: string;
+  onRepoChange?: (repo: string) => void;
   enabled: boolean;
   textHarness?: HarnessId;
   selectedPath?: string;
@@ -16,6 +19,9 @@ type Props = {
 
 export function SourceControl({
   cwd,
+  repos,
+  repo,
+  onRepoChange,
   enabled,
   textHarness,
   selectedPath,
@@ -30,6 +36,9 @@ export function SourceControl({
       <GitChangesPanel
         key={cwd}
         cwd={cwd}
+        repos={repos}
+        repo={repo}
+        onRepoChange={onRepoChange}
         enabled={enabled}
         textHarness={textHarness}
         selectedPath={selectedPath}

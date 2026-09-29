@@ -9,6 +9,7 @@ import {
 import { flushSessionCheckpoint } from "./checkpoint";
 import { isFilesystemTab, type WorkspaceTab } from "../../workspace/model/layout";
 import { orchestrator } from "../../orchestration/model/orchestration";
+import { setOrchestratorMode } from "../../orchestration/model/orchestratorMode";
 import {
   newSession,
   type HarnessId,
@@ -152,6 +153,7 @@ async function removeSession(
     await orchestrator.deleteSession(sessionId, () =>
       deleteSession(sessionId, imagePaths),
     );
+    setOrchestratorMode(sessionId, false);
     options.workspace.apply({
       type: "orchestrationReleased",
       leadId: sessionId,

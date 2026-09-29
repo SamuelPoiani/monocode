@@ -16,6 +16,12 @@ import {
   orchestrationCheckoutCwd,
   orchestrator,
 } from "../../orchestration/model/orchestration";
+import {
+  orchestratorSessions,
+  orchestratorStatus,
+  setOrchestratorMode,
+  subscribeOrchestratorMode,
+} from "../../orchestration/model/orchestratorMode";
 import { DiscussionEmpty } from "./DiscussionEmpty";
 import { LinkedWorkItemUpdateNotice } from "../../inbox/ui/LinkedWorkItemUpdateNotice";
 import { SessionReview } from "./SessionReview";
@@ -287,6 +293,17 @@ export const SessionPane = memo(function SessionPane({
         run.multiRepo,
       ),
   );
+  const orchestratorModes = useSyncExternalStore(
+    subscribeOrchestratorMode,
+    orchestratorSessions,
+    orchestratorSessions,
+  );
+  // Workers take turns from their lead, never proposals of their own.
+  const canOrchestrate = !session.inboxAsk && !session.orchestrationLeadId;
+  const orchestratorMode = canOrchestrate && orchestratorModes.has(session.id);
+  const orchestratorState = canOrchestrate
+    ? orchestratorStatus(orchestrationRuns, session.id, orchestratorMode)
+    : undefined;
   const title = sessionDisplayTitle(session.title, session.harness);
   const isEmpty = session.blocks.length === 0;
   const recallLastTurnRef = useRef<(() => void) | null>(null);
@@ -529,6 +546,11 @@ export const SessionPane = memo(function SessionPane({
       }
       hideBranchPicker={!!session.inboxAsk || managed}
       hideTopBar={!!session.inboxAsk}
+      orchestratorMode={orchestratorMode}
+      orchestratorStatus={orchestratorState}
+      onOrchestratorModeChange={
+        canOrchestrate ? (on) => setOrchestratorMode(session.id, on) : undefined
+      }
       context={session.context}
       quoteRequest={quoteRequest}
       initialDraft={

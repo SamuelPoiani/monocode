@@ -166,13 +166,24 @@ async function input(
   });
 }
 
+/** Holds Orchestrator mode like SessionPane, without a run. */
+function OrchestratorComposer(props: Parameters<typeof Composer>[0]) {
+  const [on, setOn] = useState(false);
+  return createElement(Composer, {
+    ...props,
+    orchestratorMode: on,
+    orchestratorStatus: on ? "idle" : undefined,
+    onOrchestratorModeChange: setOn,
+  });
+}
+
 describe("orchestration composer and card", () => {
-  it("toggles a badge through the plus menu and submits without a team setup or execution", async () => {
+  it("keeps the badge on across sends and submits without a team setup or execution", async () => {
     const model = modelsFor("codex")[0];
     const submit = vi.fn();
     await act(async () =>
       root.render(
-        createElement(Composer, {
+        createElement(OrchestratorComposer, {
           focused: false,
           harness: "codex",
           model: model.id,
@@ -235,7 +246,7 @@ describe("orchestration composer and card", () => {
     });
     expect(
       document.querySelector('[aria-label="Turn off Orchestrator mode"]'),
-    ).toBeNull();
+    ).not.toBeNull();
     expect(
       vi
         .mocked(invoke)
@@ -247,7 +258,7 @@ describe("orchestration composer and card", () => {
     const submit = vi.fn(() => false);
     await act(async () =>
       root.render(
-        createElement(Composer, {
+        createElement(OrchestratorComposer, {
           focused: false,
           harness: "codex",
           model: model.id,

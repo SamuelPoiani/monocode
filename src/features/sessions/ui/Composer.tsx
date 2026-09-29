@@ -71,6 +71,7 @@ import {
   type InboxComposerCard,
 } from "../../inbox/model/githubTasks";
 import type { HandoffComposerCard } from "../model/handoff";
+import type { OrchestratorStatus } from "../../orchestration/model/orchestratorMode";
 import {
   looksLikeProject,
   type RecentProject,
@@ -202,6 +203,11 @@ type Props = {
   hideProjectPicker?: boolean;
   hideBranchPicker?: boolean;
   hideTopBar?: boolean;
+  /** Orchestrator mode stays on for this session until turned off. */
+  orchestratorMode?: boolean;
+  /** Where the next message goes; undefined when this is not an orchestrator. */
+  orchestratorStatus?: OrchestratorStatus;
+  onOrchestratorModeChange?: (on: boolean) => void;
   context?: ContextUsage;
   compactSupported?: boolean;
   quoteRequest?: QuoteRequest;
@@ -491,6 +497,9 @@ export function Composer({
   hideProjectPicker = false,
   hideBranchPicker = false,
   hideTopBar = false,
+  orchestratorMode = false,
+  orchestratorStatus,
+  onOrchestratorModeChange,
   context,
   compactSupported = false,
   quoteRequest,
@@ -605,7 +614,6 @@ export function Composer({
   const [plusOpen, setPlusOpen] = useState(false);
   const [planSelected, setPlanSelected] = useState(false);
   const [operatorSelected, setOperatorSelected] = useState(false);
-  const [orchestrationSelected, setOrchestrationSelected] = useState(false);
   const [draftSelected, setDraftSelected] = useState(false);
   const [slash, setSlash] = useState<SlashToken | null>(null);
   const [skillActive, setSkillActive] = useState(0);
@@ -911,7 +919,6 @@ export function Composer({
     onDraftChange?.("");
     setDraftSelected(false);
     setPlanSelected(false);
-    setOrchestrationSelected(false);
     setSessionFolderSelected(false);
     setSessionFolderOpen(false);
     setPlusOpen(false);
@@ -1066,7 +1073,6 @@ export function Composer({
       if (planCommand) {
         setPlanSelected(true);
         setOperatorSelected(false);
-        setOrchestrationSelected(false);
       }
       el.focus();
     },
@@ -1486,7 +1492,7 @@ export function Composer({
       intent:
         planSelected || command.planning
           ? "plan"
-          : orchestrationSelected
+          : orchestratorStatus === "idle" && !operatorSelected
             ? "orchestrate"
             : "default",
       ...(resendEdited
@@ -1522,7 +1528,6 @@ export function Composer({
     onEditingLastTurnChange?.(false);
     setPlanSelected(false);
     setOperatorSelected(false);
-    setOrchestrationSelected(false);
     setSessionFolderSelected(false);
     setSessionFolderOpen(false);
     setPlusOpen(false);
@@ -2164,7 +2169,6 @@ export function Composer({
                     onClick={() => {
                       setPlanSelected((selected) => !selected);
                       setOperatorSelected(false);
-                      setOrchestrationSelected(false);
                       setDraftSelected(false);
                       setPlusOpen(false);
                       ref.current?.focus();
@@ -2189,7 +2193,6 @@ export function Composer({
                     onClick={() => {
                       setOperatorSelected((selected) => !selected);
                       setPlanSelected(false);
-                      setOrchestrationSelected(false);
                       setDraftSelected(false);
                       setPlusOpen(false);
                       ref.current?.focus();
@@ -2207,16 +2210,18 @@ export function Composer({
                       <Check className="mt-0.5 size-3.5 shrink-0 text-sky-300/80" />
                     ) : null}
                   </button>
-                  {!hideTopBar && (
+                  {!hideTopBar && onOrchestratorModeChange && (
                     <button
                       type="button"
-                      aria-pressed={orchestrationSelected}
+                      aria-pressed={orchestratorMode}
                       onMouseDown={(event) => event.preventDefault()}
                       onClick={() => {
-                        setOrchestrationSelected((selected) => !selected);
-                        setPlanSelected(false);
-                        setOperatorSelected(false);
-                        setDraftSelected(false);
+                        onOrchestratorModeChange(!orchestratorMode);
+                        if (!orchestratorMode) {
+                          setPlanSelected(false);
+                          setOperatorSelected(false);
+                          setDraftSelected(false);
+                        }
                         setPlusOpen(false);
                         ref.current?.focus();
                       }}
@@ -2234,7 +2239,7 @@ export function Composer({
                           Plan and coordinate agent work
                         </span>
                       </span>
-                      {orchestrationSelected && (
+                      {orchestratorMode && (
                         <Check className="mt-0.5 size-3.5 shrink-0 text-fuchsia-300/80" />
                       )}
                     </button>
@@ -2248,7 +2253,6 @@ export function Composer({
                         setDraftSelected((selected) => !selected);
                         setPlanSelected(false);
                         setOperatorSelected(false);
-                        setOrchestrationSelected(false);
                         setPlusOpen(false);
                         ref.current?.focus();
                       }}
@@ -2286,14 +2290,14 @@ export function Composer({
                 <X className="size-3" />
               </button>
             ) : null}
-            {!compact && orchestrationSelected && (
+            {!compact && orchestratorStatus === "idle" && (
               <button
                 type="button"
-                title="Turn off Orchestrator mode"
+                title="Your next message asks the lead for a new plan. Click to turn off Orchestrator mode."
                 aria-label="Turn off Orchestrator mode"
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => {
-                  setOrchestrationSelected(false);
+                  onOrchestratorModeChange?.(false);
                   ref.current?.focus();
                 }}
                 className="flex h-6.5 shrink-0 items-center gap-1 rounded-md bg-fuchsia-500/15 px-1.5 text-[11px] font-medium text-fuchsia-700 hover:bg-fuchsia-500/20 dark:bg-fuchsia-400/10 dark:text-fuchsia-200/90 dark:hover:bg-fuchsia-400/15"
@@ -2303,6 +2307,18 @@ export function Composer({
                 <X className="size-3" />
               </button>
             )}
+            {!compact &&
+              (orchestratorStatus === "running" ||
+                orchestratorStatus === "paused") && (
+                <span
+                  title="Messages go to the lead of the active run"
+                  className="flex h-6.5 shrink-0 items-center gap-1 rounded-md bg-fuchsia-500/15 px-1.5 text-[11px] font-medium text-fuchsia-700 dark:bg-fuchsia-400/10 dark:text-fuchsia-200/90"
+                >
+                  <Share className="size-3.5" />
+                  Orchestrator ·{" "}
+                  {orchestratorStatus === "running" ? "Running" : "Paused"}
+                </span>
+              )}
             {!compact && planSelected ? (
               <button
                 type="button"

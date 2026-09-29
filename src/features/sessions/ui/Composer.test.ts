@@ -360,6 +360,7 @@ describe("Composer question focus", () => {
           initialDraft: "List my notes",
           hideProjectPicker: true,
           hideBranchPicker: true,
+          onOrchestratorModeChange: vi.fn(),
           onFocus: vi.fn(),
           onCwdChange: vi.fn(),
           onModelChange: vi.fn(),
@@ -421,6 +422,99 @@ describe("Composer question focus", () => {
     expect(
       container.querySelector('[aria-label="Turn off Operator"]'),
     ).toBeNull();
+  });
+
+  it("keeps Orchestrator mode across messages and routes by run state", async () => {
+    const onSubmit = vi.fn().mockReturnValue(true);
+    const onOrchestratorModeChange = vi.fn();
+    const render = (
+      orchestratorMode: boolean,
+      orchestratorStatus?: "idle" | "running" | "paused",
+    ) =>
+      act(async () =>
+        root.render(
+          createElement(Composer, {
+            focused: true,
+            harness: "claude",
+            model: "claude-sonnet",
+            runtimeMode: "supervised",
+            executionCwd: "/repo",
+            hideProjectPicker: true,
+            hideBranchPicker: true,
+            orchestratorMode,
+            orchestratorStatus,
+            onOrchestratorModeChange,
+            onFocus: vi.fn(),
+            onCwdChange: vi.fn(),
+            onModelChange: vi.fn(),
+            onRuntimeModeChange: vi.fn(),
+            onSubmit,
+          }),
+        ),
+      );
+    const send = async (text: string) => {
+      const textarea = container.querySelector("textarea")!;
+      await act(async () => {
+        textarea.value = text;
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>('[aria-label="Send"]')!
+          .click(),
+      );
+    };
+
+    await render(false);
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Add files or choose a mode"]',
+        )!
+        .click(),
+    );
+    const orchestratorOption = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(
+        "[data-composer-plus] button",
+      ),
+    ).find((button) => button.textContent?.includes("Orchestrator"))!;
+    await act(async () => orchestratorOption.click());
+    expect(onOrchestratorModeChange).toHaveBeenLastCalledWith(true);
+
+    // Idle: every message asks for a proposal and the mode stays on.
+    await render(true, "idle");
+    await send("Plan the settings page");
+    await send("Split the API work differently");
+    expect(onSubmit.mock.calls.map((call) => call[2])).toEqual([
+      { intent: "orchestrate" },
+      { intent: "orchestrate" },
+    ]);
+    expect(
+      container.querySelector('[aria-label="Turn off Orchestrator mode"]'),
+    ).not.toBeNull();
+
+    // An active run takes follow-ups; it cannot be turned off mid-run.
+    await render(true, "running");
+    await send("How are the workers doing?");
+    expect(onSubmit).toHaveBeenLastCalledWith(
+      "How are the workers doing?",
+      [],
+      { intent: "default" },
+    );
+    expect(container.textContent).toContain("Orchestrator · Running");
+    expect(
+      container.querySelector('[aria-label="Turn off Orchestrator mode"]'),
+    ).toBeNull();
+
+    await render(true, "idle");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Turn off Orchestrator mode"]',
+        )!
+        .click(),
+    );
+    expect(onOrchestratorModeChange).toHaveBeenLastCalledWith(false);
   });
 
   it("clears the parent draft before submit so a remounting composer stays empty", async () => {

@@ -6493,7 +6493,7 @@ export default function App({
             revealHandoff(wrap.text);
           }
           nudgeOpenEditors(event, workCwd);
-          if (!orchestrator.forSession(sessionId))
+          if (orchestrator.recordsCheckpoints(sessionId))
             trackSessionEdits(sessionId, workCwd, event);
           const routed = routePlanEvent(event);
           if (routed) enqueueHarnessEvent(sessionId, routed);
@@ -6531,7 +6531,7 @@ export default function App({
           });
         };
 
-        if (!current.inboxAsk && !orchestrator.forSession(sessionId)) {
+        if (!current.inboxAsk && orchestrator.recordsCheckpoints(sessionId)) {
           await beginSessionTurn(sessionId, workCwd).catch(() => undefined);
         }
         if (turnGen.current.get(sessionId) !== gen) return;

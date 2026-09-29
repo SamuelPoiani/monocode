@@ -332,6 +332,22 @@ export class Orchestrator {
         run.leadId === id || run.tasks.some((task) => task.sessionId === id),
     );
   }
+  /**
+   * Whether this session's turns record a change checkpoint. Leads and
+   * shared-checkout workers edit a checkout other sessions write to, so they
+   * are not tracked. An isolated worker must be: its checkpoint is the only
+   * record integration can apply to the lead checkout.
+   */
+  recordsCheckpoints(id: string) {
+    const run = this.forSession(id);
+    if (!run) return true;
+    return run.tasks.some(
+      (task) =>
+        task.sessionId === id &&
+        task.workspacePolicy !== "shared" &&
+        !!task.workspace,
+    );
+  }
   resumeBlocker(
     leadId: string,
     checkoutCwd?: string,

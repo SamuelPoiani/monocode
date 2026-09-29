@@ -28,6 +28,7 @@ import {
   orchestrator,
   resolveWorkerBase,
   shellPath,
+  workerWriteScopes,
   workspaceIdentity,
   type ControlOutcome,
 } from "../features/orchestration/model/orchestration";
@@ -307,6 +308,7 @@ import {
   keepSessionChanges,
   notifyReviewChanged,
   prepareSessionCheckpoint,
+  reconcileSessionCheckpoint,
   sessionCheckpointCleanupSafe,
 } from "../features/sessions/model/checkpoint";
 import { notifyDirsChanged } from "../features/files/model/fileTree";
@@ -6727,7 +6729,11 @@ export default function App({
         };
 
         if (!current.inboxAsk && orchestrator.recordsCheckpoints(sessionId)) {
-          await beginSessionTurn(sessionId, workCwd).catch(() => undefined);
+          await beginSessionTurn(
+            sessionId,
+            workCwd,
+            orchestrator.isolatedWorker(sessionId),
+          ).catch(() => undefined);
         }
         if (turnGen.current.get(sessionId) !== gen) return;
         let buildSucceeded = false;
@@ -8812,6 +8818,16 @@ export default function App({
         // Workers belong to the lead's agent panel; no workspace tab is created.
         return { scratchDir, workspace };
       },
+      captureWorker: async (_run, task) => {
+        const checkoutCwd = task.workspace?.checkoutCwd;
+        if (!checkoutCwd) return;
+        await reconcileSessionCheckpoint(
+          task.sessionId,
+          checkoutCwd,
+          workerWriteScopes(task),
+        );
+        notifyReviewChanged(task.sessionId);
+      },
       integrateWorker: async (run, task) => {
         const fromCwd = task.workspace?.checkoutCwd;
         if (!fromCwd)
@@ -8844,7 +8860,12 @@ export default function App({
           throw new Error(
             "The worker or lead branch moved while this task was running. The worker worktree was kept for manual review.",
           );
-        return applySessionCheckpoint(task.sessionId, fromCwd, baseCwd);
+        return applySessionCheckpoint(
+          task.sessionId,
+          fromCwd,
+          baseCwd,
+          workerWriteScopes(task),
+        );
       },
       cleanupWorker: async (run, task, onlyIfUnchanged) => {
         const workspace = task.workspace;
@@ -8878,7 +8899,12 @@ export default function App({
         } else if (exists) {
           // Re-verify immediately before destructive cleanup. The operation is
           // idempotent, so this also finishes a partially applied integration.
-          await applySessionCheckpoint(task.sessionId, path, baseCwd);
+          await applySessionCheckpoint(
+            task.sessionId,
+            path,
+            baseCwd,
+            workerWriteScopes(task),
+          );
         }
 
         if (exists) {

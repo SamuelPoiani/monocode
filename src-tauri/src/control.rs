@@ -393,7 +393,28 @@ fn create_worker_scratch() -> Result<PathBuf, String> {
         builder
     };
     builder.create(&path).map_err(|e| e.to_string())?;
-    std::fs::canonicalize(path).map_err(|e| e.to_string())
+    std::fs::canonicalize(path)
+        .map(without_verbatim_prefix)
+        .map_err(|e| e.to_string())
+}
+
+/// Windows canonicalization returns the extended `\\?\C:\...` form, which
+/// tools such as Prisma and Turbopack cannot use as TMP/TEMP. Short temp
+/// paths never need it.
+fn without_verbatim_prefix(path: PathBuf) -> PathBuf {
+    if !cfg!(windows) {
+        return path;
+    }
+    let Some(text) = path.to_str() else {
+        return path;
+    };
+    if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{share}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(drive) if drive.as_bytes().get(1) == Some(&b':') => PathBuf::from(drive),
+        _ => path,
+    }
 }
 
 fn configure_worker_scratch(cmd: &mut Command, path: &Path) {
@@ -598,7 +619,9 @@ pub fn control_write_path(path: String) -> Result<String, String> {
         );
         existing = existing.parent().ok_or("Invalid write path")?;
     }
-    let mut resolved = std::fs::canonicalize(existing).map_err(|e| e.to_string())?;
+    let mut resolved = std::fs::canonicalize(existing)
+        .map(without_verbatim_prefix)
+        .map_err(|e| e.to_string())?;
     for part in missing.into_iter().rev() {
         resolved.push(part);
     }
@@ -700,11 +723,27 @@ mod tests {
     }
 
     #[test]
+    fn extended_windows_paths_are_exported_in_their_plain_form() {
+        let plain = |value: &str| {
+            without_verbatim_prefix(PathBuf::from(value))
+                .to_string_lossy()
+                .into_owned()
+        };
+        if cfg!(windows) {
+            assert_eq!(plain(r"\\?\C:\Users\me\Temp"), r"C:\Users\me\Temp");
+            assert_eq!(plain(r"\\?\UNC\server\share\t"), r"\\server\share\t");
+            assert_eq!(plain(r"\\?\Volume{x}\t"), r"\\?\Volume{x}\t");
+        }
+        assert_eq!(plain("/tmp/monocode"), "/tmp/monocode");
+    }
+
+    #[test]
     fn workers_get_distinct_private_scratch_and_matching_temp_environment() {
         let first = create_worker_scratch().unwrap();
         let second = create_worker_scratch().unwrap();
         assert_ne!(first, second);
         assert!(first.is_absolute());
+        assert!(!first.to_string_lossy().starts_with(r"\\?\"));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

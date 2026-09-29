@@ -58,6 +58,11 @@ export type OrchestrationHost = {
     run: OrchestrationRun,
     task: OrchestrationTask,
   ): Promise<WorkerPreparation>;
+  /**
+   * Record an isolated worker's whole turn, including edits made through
+   * shell commands, before its result becomes reviewable.
+   */
+  captureWorker(run: OrchestrationRun, task: OrchestrationTask): Promise<void>;
   integrateWorker(
     run: OrchestrationRun,
     task: OrchestrationTask,
@@ -172,6 +177,32 @@ export const inRunCheckout = (
 const messageOf = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 
+/** A worker's write scopes, relative to its own checkout. */
+export const workerWriteScopes = (task: OrchestrationTask) =>
+  workerRelativeFiles(task.files, task.workspace?.basePrefix);
+
+/** Whether following dependsOn from `from` ever reaches `goal`. */
+function waitsOn(tasks: OrchestrationTask[], from: string[], goal: string) {
+  const seen = new Set<string>();
+  const pending = [...from];
+  while (pending.length) {
+    const id = pending.pop()!;
+    if (id === goal) return true;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    pending.push(...(tasks.find((task) => task.id === id)?.dependsOn ?? []));
+  }
+  return false;
+}
+
+const replacementHint = (taskId: string) =>
+  `Revive it with message or retry, delegate a replacement with "replaces":"${taskId}" so its dependents wait on that instead, or cancel the dependents.`;
+
+/** Which turn of a task its latest dispatch was; the next one is this + 1. */
+const turnOf = (run: OrchestrationRun, taskId: string) =>
+  (run.dispatches ?? []).filter((dispatch) => dispatch.taskId === taskId)
+    .length;
+
 const recoveryTurn = (reason: string) =>
   `Continue the existing assignment from its retained worker checkout. The previous turn was stopped because the orchestration run was interrupted: ${reason}\n\nInspect the current files and prior conversation before acting. Preserve completed work, do not repeat destructive or external operations, remain inside the assigned write scope, run the remaining focused checks, and report what was already done versus what you completed now.`;
 
@@ -220,7 +251,10 @@ function strings(value: unknown, label: string, max = 64): string[] {
  */
 const FIELDS = new Map<string, string[]>([
   ["list", []],
-  ["delegate", ["title", "harness", "model", "prompt", "files", "dependsOn"]],
+  [
+    "delegate",
+    ["title", "harness", "model", "prompt", "files", "dependsOn", "replaces"],
+  ],
   ["get", ["taskId"]],
   ["message", ["taskId", "text"]],
   ["retry", ["taskId", "text", "files"]],
@@ -339,9 +373,11 @@ export class Orchestrator {
    * record integration can apply to the lead checkout.
    */
   recordsCheckpoints(id: string) {
-    const run = this.forSession(id);
-    if (!run) return true;
-    return run.tasks.some(
+    return !this.forSession(id) || this.isolatedWorker(id);
+  }
+  /** Whether only this session writes its checkout: an isolated worker. */
+  isolatedWorker(id: string) {
+    return !!this.forSession(id)?.tasks.some(
       (task) =>
         task.sessionId === id &&
         task.workspacePolicy !== "shared" &&
@@ -962,6 +998,7 @@ export class Orchestrator {
         ...task,
         prompt: undefined,
         scopes: undefined,
+        turn: turnOf(run, task.id),
         waitingFor: this.waitingFor(run, task),
         needsInput: this.pendingInput(task),
       })),
@@ -997,10 +1034,15 @@ export class Orchestrator {
     task: OrchestrationTask,
   ): string | undefined {
     if (task.status !== "queued") return undefined;
-    const dependency = run.tasks.find(
+    const dependencies = run.tasks.filter(
       (entry) => task.dependsOn.includes(entry.id) && !entry.accepted,
     );
-    if (dependency) return `Waiting for review: ${dependency.title}`;
+    const cancelled = dependencies.find(
+      (entry) => entry.status === "cancelled",
+    );
+    if (cancelled)
+      return `Blocked: its dependency ${cancelled.title} (${cancelled.id}) was cancelled. ${replacementHint(cancelled.id)}`;
+    if (dependencies[0]) return `Waiting for review: ${dependencies[0].title}`;
     const owner = run.tasks.find(
       (entry) => activeTask(entry) && scopesOverlap(entry.scopes, task.scopes),
     );
@@ -1077,6 +1119,7 @@ export class Orchestrator {
           recovery:
             run.status === "active" ? undefined : this.inactiveReason(run),
           scopes: undefined,
+          turn: turnOf(this.run(run.leadId)!, target.id),
           waitingFor: this.waitingFor(this.run(run.leadId)!, target),
           needsInput: this.pendingInput(target),
         };
@@ -1132,6 +1175,21 @@ export class Orchestrator {
           throw new Error(
             `dependsOn must hold taskIds from this run; unknown or cancelled: ${listed(missing)}.`,
           );
+        const replaces =
+          input.replaces == null
+            ? undefined
+            : text(input.replaces, "replaces", 128);
+        const replaced = replaces
+          ? run.tasks.find((item) => item.id === replaces)
+          : undefined;
+        if (replaces && !replaced)
+          throw new Error(
+            "replaces must be a taskId from this run. Use a taskId returned by delegate or list.",
+          );
+        if (replaced && replaced.status !== "cancelled")
+          throw new Error(
+            `Only a cancelled task can be replaced; ${replaced.title} is ${replaced.status}. Correct it with message or retry, or cancel it first.`,
+          );
         const scopes = await this.store.scopes(
           orchestrationCheckoutCwd(run),
           files,
@@ -1157,15 +1215,44 @@ export class Orchestrator {
           delivered: true,
           workspacePolicy: "isolated-child",
         };
+        // The replacement takes the cancelled task's place for every task
+        // that still waits on it; each then waits on the replacement's review.
+        const current = this.run(run.leadId)!;
+        const tasks = [
+          ...current.tasks.map((entry) =>
+            replaces &&
+            entry.status !== "cancelled" &&
+            entry.dependsOn.includes(replaces)
+              ? {
+                  ...entry,
+                  dependsOn: [
+                    ...new Set(
+                      entry.dependsOn.map((id) =>
+                        id === replaces ? created.id : id,
+                      ),
+                    ),
+                  ],
+                }
+              : entry,
+          ),
+          created,
+        ];
+        if (replaced && waitsOn(tasks, dependsOn, created.id))
+          throw new Error(
+            `dependsOn cannot include a task that waits on ${replaced.title}; the replacement would wait on itself.`,
+          );
+        const dependents = replaces
+          ? tasks
+              .filter((entry) => entry.dependsOn.includes(created.id))
+              .map((entry) => entry.id)
+          : [];
         return record(
-          {
-            ...this.run(run.leadId)!,
-            tasks: [...this.run(run.leadId)!.tasks, created],
-          },
+          { ...current, tasks },
           {
             taskId: created.id,
             sessionId: created.sessionId,
             status: "queued",
+            ...(replaces ? { replaces, dependents } : {}),
           },
         );
       }
@@ -1199,7 +1286,11 @@ export class Orchestrator {
             activeDispatchId: undefined,
             acceptedDispatchId: undefined,
           },
-          { taskId: target.id, status: "queued" },
+          {
+            taskId: target.id,
+            status: "queued",
+            turn: turnOf(this.run(run.leadId)!, target.id) + 1,
+          },
         );
       }
       case "retry": {
@@ -1257,7 +1348,12 @@ export class Orchestrator {
             activeDispatchId: undefined,
             acceptedDispatchId: undefined,
           },
-          { taskId: target.id, status: "queued", files },
+          {
+            taskId: target.id,
+            status: "queued",
+            files,
+            turn: turnOf(this.run(run.leadId)!, target.id) + 1,
+          },
         );
       }
       case "steer": {
@@ -1277,9 +1373,23 @@ export class Orchestrator {
           steered: true,
         });
       }
-      case "cancel":
-        await this.cancelTask(run.leadId, task().id);
-        return record(this.run(run.leadId)!, { cancelled: true });
+      case "cancel": {
+        const target = task();
+        await this.cancelTask(run.leadId, target.id);
+        const blocked = this.run(run.leadId)!.tasks.filter(
+          (entry) =>
+            entry.status === "queued" && entry.dependsOn.includes(target.id),
+        );
+        return record(this.run(run.leadId)!, {
+          cancelled: true,
+          ...(blocked.length
+            ? {
+                blockedDependents: blocked.map((entry) => entry.id),
+                next: `These queued tasks wait on the cancelled task. ${replacementHint(target.id)}`,
+              }
+            : {}),
+        });
+      }
       case "respond": {
         const target = task();
         const pending = this.pendingInput(target);
@@ -1722,13 +1832,31 @@ export class Orchestrator {
     if (task.status !== "running") return;
     // A fast final response must not make an unchecked write reviewable.
     await Promise.all(this.writeChecks.get(dispatchId) ?? []);
-    task = this.run(leadId)?.tasks.find((entry) => entry.id === taskId);
-    if (
-      !task ||
-      task.status !== "running" ||
-      task.activeDispatchId !== dispatchId
-    )
-      return;
+    const current = () => {
+      const latest = this.run(leadId)?.tasks.find(
+        (entry) => entry.id === taskId,
+      );
+      return latest?.status === "running" &&
+        latest.activeDispatchId === dispatchId
+        ? latest
+        : undefined;
+    };
+    task = current();
+    if (!task) return;
+    // Shell commands report no tool event, so record the isolated checkout's
+    // whole turn before the lead can review or integrate it.
+    if (task.workspacePolicy !== "shared" && task.workspace) {
+      try {
+        await this.host!.captureWorker(this.run(leadId)!, task);
+      } catch (error) {
+        outcome = {
+          ...outcome,
+          status: "failed",
+          error: `Could not record ${task.title}'s changes: ${messageOf(error)}. Its checkout was kept; send it another turn with message to record them again.`,
+        };
+      }
+      if (!current()) return;
+    }
     this.writeChecks.delete(dispatchId);
     const run = this.run(leadId)!;
     await this.commit({

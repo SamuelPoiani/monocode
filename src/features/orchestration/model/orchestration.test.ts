@@ -59,6 +59,7 @@ function setup() {
         },
       };
     }),
+    captureWorker: vi.fn(async () => {}),
     integrateWorker: vi.fn(async () => ({ files: [], alreadyApplied: 0 })),
     cleanupWorker: vi.fn(async () => true),
     submit: vi.fn((id, _text, done) => {
@@ -660,6 +661,154 @@ describe("local orchestration", () => {
     expect(f.tasks()[1].status).toBe("queued");
     await f.call("review", { taskId: upstream.id });
     await vi.waitFor(() => expect(f.tasks()[1].status).toBe("running"));
+  });
+  it("records an isolated worker's whole turn before its result is reviewable", async () => {
+    const f = setup();
+    await f.start();
+    await f.delegate(["src/a"]);
+    await vi.waitFor(() => expect(f.host.submit).toHaveBeenCalledOnce());
+    const task = f.tasks()[0];
+    expect(f.manager.isolatedWorker(task.sessionId)).toBe(true);
+    expect(f.manager.isolatedWorker("lead")).toBe(false);
+    let captured!: () => void;
+    vi.mocked(f.host.captureWorker).mockImplementationOnce(
+      () => new Promise<void>((resolve) => (captured = resolve)),
+    );
+
+    f.completions.get(task.sessionId)!({ status: "completed", text: "Done" });
+    await vi.waitFor(() =>
+      expect(f.host.captureWorker).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ id: task.id }),
+      ),
+    );
+    // Review cannot race the capture of shell edits.
+    expect(f.tasks()[0].status).toBe("running");
+    await expect(f.call("review", { taskId: task.id })).rejects.toThrow(
+      "Only a completed result",
+    );
+    captured();
+    await vi.waitFor(() => expect(f.tasks()[0].status).toBe("completed"));
+    await f.call("review", { taskId: task.id });
+    expect(f.tasks()[0].accepted).toBe(true);
+  });
+  it("does not offer a turn for review when its changes could not be recorded", async () => {
+    const f = setup();
+    await f.start();
+    await f.delegate(["src/a"]);
+    await vi.waitFor(() => expect(f.host.submit).toHaveBeenCalledOnce());
+    const task = f.tasks()[0];
+    vi.mocked(f.host.captureWorker).mockRejectedValueOnce(
+      new Error("disk full"),
+    );
+
+    f.completions.get(task.sessionId)!({ status: "completed", text: "Done" });
+    await vi.waitFor(() => expect(f.tasks()[0].status).toBe("failed"));
+    expect(f.tasks()[0].error).toMatch(/Could not record.*disk full.*message/);
+    expect(f.tasks()[0].result).toBe("Done");
+
+    // Another turn records the checkout again.
+    await f.call("message", { taskId: task.id, text: "Record your work" });
+    await vi.waitFor(() => expect(f.host.submit).toHaveBeenCalledTimes(2));
+    f.completions.get(task.sessionId)!({ status: "completed", text: "Done" });
+    await vi.waitFor(() => expect(f.tasks()[0].status).toBe("completed"));
+  });
+  it("lets a replacement take over a cancelled dependency's dependents", async () => {
+    const f = setup();
+    await f.start();
+    await f.delegate(["src/types.ts"]);
+    await vi.waitFor(() => expect(f.host.submit).toHaveBeenCalledOnce());
+    const upstream = f.tasks()[0];
+    await f.delegate(["src/ui"], { dependsOn: [upstream.id] });
+    await f.delegate(["src/api"], { dependsOn: [upstream.id] });
+    const [, ui, api] = f.tasks();
+
+    const cancelled = await f.call("cancel", { taskId: upstream.id });
+    expect(cancelled).toMatchObject({
+      cancelled: true,
+      blockedDependents: [ui.id, api.id],
+    });
+    expect((cancelled as { next: string }).next).toContain(
+      `"replaces":"${upstream.id}"`,
+    );
+    const waiting = (await f.call("get", { taskId: ui.id })) as {
+      waitingFor: string;
+    };
+    expect(waiting.waitingFor).toContain("was cancelled");
+    expect(waiting.waitingFor).toContain(`"replaces":"${upstream.id}"`);
+
+    const replacement = (await f.delegate(["src/types.ts"], {
+      replaces: upstream.id,
+    })) as { taskId: string; dependents: string[] };
+    expect(replacement.dependents).toEqual([ui.id, api.id]);
+    expect(f.tasks()[1].dependsOn).toEqual([replacement.taskId]);
+    expect(f.tasks()[2].dependsOn).toEqual([replacement.taskId]);
+    expect(f.tasks()[0].status).toBe("cancelled");
+
+    await vi.waitFor(() =>
+      expect(f.completions.has(f.tasks()[3].sessionId)).toBe(true),
+    );
+    expect(f.tasks()[1].status).toBe("queued");
+    f.completions.get(f.tasks()[3].sessionId)!({
+      status: "completed",
+      text: "Types ready",
+    });
+    await vi.waitFor(() => expect(f.tasks()[3].status).toBe("completed"));
+    await f.call("review", { taskId: replacement.taskId });
+    await vi.waitFor(() =>
+      expect(f.tasks().slice(1, 3).map((task) => task.status)).toEqual([
+        "running",
+        "running",
+      ]),
+    );
+  });
+  it("only replaces a cancelled task, and never with one that waits on itself", async () => {
+    const f = setup();
+    await f.start();
+    await f.delegate(["src/types.ts"]);
+    const upstream = f.tasks()[0];
+    await f.delegate(["src/ui"], { dependsOn: [upstream.id] });
+    const ui = f.tasks()[1];
+
+    await expect(
+      f.delegate(["src/types.ts"], { replaces: upstream.id }),
+    ).rejects.toThrow("Only a cancelled task can be replaced");
+    await expect(
+      f.delegate(["src/types.ts"], { replaces: "nope" }),
+    ).rejects.toThrow("replaces must be a taskId");
+    await f.call("cancel", { taskId: upstream.id });
+    await expect(
+      f.delegate(["src/types.ts"], {
+        replaces: upstream.id,
+        dependsOn: [ui.id],
+      }),
+    ).rejects.toThrow("wait on itself");
+    expect(f.tasks()).toHaveLength(2);
+    expect(f.tasks()[1].dependsOn).toEqual([upstream.id]);
+  });
+  it("numbers each turn so a poll can tell a new result from the previous one", async () => {
+    const f = setup();
+    await f.start();
+    await f.delegate(["src/a"]);
+    await vi.waitFor(() => expect(f.host.submit).toHaveBeenCalledOnce());
+    const task = f.tasks()[0];
+    f.completions.get(task.sessionId)!({ status: "completed", text: "One" });
+    await vi.waitFor(() => expect(f.tasks()[0].status).toBe("completed"));
+    expect(await f.call("get", { taskId: task.id })).toMatchObject({
+      status: "completed",
+      turn: 1,
+    });
+
+    expect(
+      await f.call("message", { taskId: task.id, text: "Again" }),
+    ).toEqual({ taskId: task.id, status: "queued", turn: 2 });
+    await vi.waitFor(() => expect(f.host.submit).toHaveBeenCalledTimes(2));
+    f.completions.get(task.sessionId)!({ status: "completed", text: "Two" });
+    await vi.waitFor(() => expect(f.tasks()[0].status).toBe("completed"));
+    const listed = (await f.call("list")) as {
+      run: { tasks: { turn: number; result: string }[] };
+    };
+    expect(listed.run.tasks[0]).toMatchObject({ turn: 2, result: "Two" });
   });
   it("deduplicates command retries and rejects foreign tasks or unapproved harnesses", async () => {
     const f = setup();

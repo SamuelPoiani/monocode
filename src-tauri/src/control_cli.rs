@@ -15,14 +15,18 @@ Actions, with the JSON object each one takes:
             harness/model IDs you may assign.
   delegate  {"title":"Short title","harness":"<id from list>",
              "model":"<id from list>","prompt":"Self-contained instructions",
-             "files":["src/feature"],"dependsOn":["<taskId>"]}
+             "files":["src/feature"],"dependsOn":["<taskId>"],
+             "replaces":"<cancelled taskId>"}
             Queue a worker and return its taskId. "model" is optional and
             defaults to the first model list allows for that harness.
             "files" is the write scope: project-relative paths, where a
             directory covers its descendants and ["."] reserves the whole
             checkout. "dependsOn" holds taskIds that must be reviewed first.
+            "replaces" is optional: every task still waiting on that
+            cancelled task waits on this one instead.
   get       {"taskId":"..."}
-            One task, including its latest result.
+            One task, including its latest result. "turn" counts the task's
+            dispatches, so a new result has a higher turn than the last one.
   wait      {"timeoutSeconds":20}
             Block until a task changes state, or until the timeout (0-25).
             Returns at once when paused, stopped, or nothing is running or queued.
@@ -38,15 +42,21 @@ Actions, with the JSON object each one takes:
             work it has already done. Use this the moment you see it going
             the wrong way; message only lands once it has stopped.
   message   {"taskId":"...","text":"..."}
-            Send a stopped worker another turn within its existing scope; it
-            keeps its session, checkout and history.
+            Send a stopped or cancelled worker another turn within its existing
+            scope; it keeps its session, checkout and history. Returns the
+            "turn" that will carry the result.
   retry     {"taskId":"...","text":"...","files":["src/feature"]}
-            Retry a stopped worker with corrected project-relative write
-            scopes. Use this only when the additional files are required.
+            Retry a stopped or cancelled worker with corrected
+            project-relative write scopes. Use this only when the additional
+            files are required.
   cancel    {"taskId":"..."}
-            Cancel a task, whether it is running or still queued.
+            Cancel a task, whether it is running or still queued. Queued
+            tasks that depend on it stay blocked until you revive it, delegate
+            a replacement with "replaces", or cancel them too.
   review    {"taskId":"..."}
-            Accept a completed task's result.
+            Accept a completed task's result: every change in its checkout
+            within its write scope when its last turn ended, including edits
+            made through shell commands. Changes outside the scope are refused.
   finish    {}
             End the run, once every task is accepted or cancelled.
 

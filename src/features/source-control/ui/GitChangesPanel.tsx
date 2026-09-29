@@ -30,6 +30,7 @@ import {
   type ReactNode,
 } from "react";
 import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
+import { SearchableSelect } from "../../../shared/ui/SearchableSelect";
 import {
   GitHistoryGraph,
   GraphResizeSash,
@@ -103,6 +104,11 @@ type AmendTarget = { branch: string | null; head: string | null };
 
 type Props = {
   cwd: string;
+  /** Repositories nested in the plain folder `cwd` belongs to; empty when
+   * it holds none. Absent when `cwd` is a repository of its own. */
+  repos?: string[];
+  repo?: string;
+  onRepoChange?: (repo: string) => void;
   enabled: boolean;
   textHarness?: HarnessId;
   selectedPath?: string;
@@ -115,6 +121,9 @@ type Props = {
 
 export function GitChangesPanel({
   cwd,
+  repos,
+  repo,
+  onRepoChange,
   enabled,
   textHarness,
   selectedPath,
@@ -124,7 +133,8 @@ export function GitChangesPanel({
   onOpenAllChanges,
   onOpenCommit,
 }: Props) {
-  const { index, reload } = useDiffIndex(cwd, enabled);
+  const notRepo = repos?.length === 0;
+  const { index, reload } = useDiffIndex(cwd, enabled && !notRepo);
   const files = index?.files ?? [];
   const paneRef = useRef<HTMLDivElement>(null);
   const branchMenuRef = useRef<HTMLDivElement>(null);
@@ -195,7 +205,20 @@ export function GitChangesPanel({
       className="flex h-full min-h-0 flex-1 flex-col overflow-hidden"
     >
       <header className="flex h-9 shrink-0 items-center gap-2 border-b border-stroke px-3">
-        <span className="text-[12px] font-medium text-content">Changes</span>
+        {repos?.length && repo && onRepoChange ? (
+          <SearchableSelect
+            label="Repository"
+            value={repo}
+            options={repos.map((name) => ({ value: name, label: name }))}
+            onChange={onRepoChange}
+            searchPlaceholder="Search repositories…"
+            emptyLabel="No matching repositories"
+            searchable={repos.length > 8}
+            variant="pill"
+          />
+        ) : (
+          <span className="text-[12px] font-medium text-content">Changes</span>
+        )}
         {status ? (
           <span role="status" className="text-[11px] text-content/50">
             {status}
@@ -270,59 +293,67 @@ export function GitChangesPanel({
           <span className="ml-auto" />
         )}
       </header>
-      <ChangedFiles
-        cwd={cwd}
-        textHarness={textHarness}
-        index={index}
-        files={files}
-        selected={selectedPath}
-        selectedKind={selectedKind}
-        enabled={enabled}
-        fill
-        busy={busy}
-        setBusy={setBusy}
-        onOpenFile={onOpenFile}
-        onOpenAllChanges={onOpenAllChanges}
-        onMutated={(paths) => {
-          reload();
-          notifyGitChanged();
-          invalidateWatchedFiles(paths);
-          window.setTimeout(() => invalidateWatchedFiles(paths), 150);
-        }}
-      />
-      {graphExpanded ? (
-        <GraphResizeSash
-          height={graphHeight}
-          onHeightPaint={setGraphHeight}
-          onHeightCommit={(next) => {
-            setGraphHeight(next);
-            saveGraphPanelHeight(next);
-          }}
-          maxHeight={() => {
-            const pane = paneRef.current;
-            if (!pane) return GRAPH_PANEL_DEFAULT * 2;
-            return Math.max(GRAPH_PANEL_MIN, pane.clientHeight - 160);
-          }}
-        />
-      ) : null}
-      <div
-        className={`shrink-0 overflow-hidden border-t border-stroke ${
-          graphExpanded ? "min-h-0" : "h-7"
-        }`}
-        style={graphExpanded ? { height: graphHeight } : undefined}
-      >
-        <GitHistoryGraph
-          cwd={cwd}
-          enabled={enabled}
-          expanded={graphExpanded}
-          selectedSha={selectedSha}
-          onToggleExpanded={() => {
-            graphOpen = !graphExpanded;
-            setGraphExpanded(graphOpen);
-          }}
-          onOpenCommit={onOpenCommit}
-        />
-      </div>
+      {notRepo ? (
+        <p className="px-3 py-2 text-[12px] text-content/50">
+          Not a Git repository
+        </p>
+      ) : (
+        <>
+          <ChangedFiles
+            cwd={cwd}
+            textHarness={textHarness}
+            index={index}
+            files={files}
+            selected={selectedPath}
+            selectedKind={selectedKind}
+            enabled={enabled}
+            fill
+            busy={busy}
+            setBusy={setBusy}
+            onOpenFile={onOpenFile}
+            onOpenAllChanges={onOpenAllChanges}
+            onMutated={(paths) => {
+              reload();
+              notifyGitChanged();
+              invalidateWatchedFiles(paths);
+              window.setTimeout(() => invalidateWatchedFiles(paths), 150);
+            }}
+          />
+          {graphExpanded ? (
+            <GraphResizeSash
+              height={graphHeight}
+              onHeightPaint={setGraphHeight}
+              onHeightCommit={(next) => {
+                setGraphHeight(next);
+                saveGraphPanelHeight(next);
+              }}
+              maxHeight={() => {
+                const pane = paneRef.current;
+                if (!pane) return GRAPH_PANEL_DEFAULT * 2;
+                return Math.max(GRAPH_PANEL_MIN, pane.clientHeight - 160);
+              }}
+            />
+          ) : null}
+          <div
+            className={`shrink-0 overflow-hidden border-t border-stroke ${
+              graphExpanded ? "min-h-0" : "h-7"
+            }`}
+            style={graphExpanded ? { height: graphHeight } : undefined}
+          >
+            <GitHistoryGraph
+              cwd={cwd}
+              enabled={enabled}
+              expanded={graphExpanded}
+              selectedSha={selectedSha}
+              onToggleExpanded={() => {
+                graphOpen = !graphExpanded;
+                setGraphExpanded(graphOpen);
+              }}
+              onOpenCommit={onOpenCommit}
+            />
+          </div>
+        </>
+      )}
     </div>
   );
 }

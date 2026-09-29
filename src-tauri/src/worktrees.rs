@@ -190,6 +190,53 @@ pub async fn git_repo_prefix(root: String, path: String) -> Result<Option<String
         .map_err(|error| error.to_string())
 }
 
+const NESTED_REPO_DEPTH: usize = 2;
+const NESTED_REPO_LIMIT: usize = 100;
+
+/// Repositories inside a plain folder, as `/`-separated paths relative to
+/// it, found at most two levels down without descending into a repository.
+/// `None` when `root` is itself inside a repository or is not a folder.
+fn nested_repos(root: &Path) -> Option<Vec<String>> {
+    if !root.is_dir() || git(root, &["rev-parse", "--show-toplevel"]).is_ok() {
+        return None;
+    }
+    let mut found = Vec::new();
+    let mut pending = vec![(root.to_path_buf(), 0)];
+    while let Some((dir, depth)) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') || name == "node_modules" {
+                continue;
+            }
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            if path.join(".git").exists() {
+                if let Ok(relative) = path.strip_prefix(root) {
+                    found.push(path_to_js(relative).replace('\\', "/"));
+                }
+            } else if depth + 1 < NESTED_REPO_DEPTH {
+                pending.push((path, depth + 1));
+            }
+        }
+    }
+    found.sort_by_key(|name| name.to_lowercase());
+    found.truncate(NESTED_REPO_LIMIT);
+    Some(found)
+}
+
+#[tauri::command(async)]
+pub async fn git_nested_repos(root: String) -> Result<Option<Vec<String>>, String> {
+    tauri::async_runtime::spawn_blocking(move || nested_repos(&expand_home(&root)))
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// Worker checkouts of a repository nested in a plain project folder live
 /// beside that folder, mirroring the repository's place inside it, so they
 /// never show up inside the project itself.
@@ -920,6 +967,23 @@ mod tests {
             git(&root, &["rev-parse", "--verify", "refs/heads/feature/test"]).unwrap(),
             commit
         );
+    }
+
+    #[test]
+    fn lists_repositories_nested_in_a_plain_folder() {
+        let repo = repo();
+        let plain = repo.0.join("plain");
+        for name in ["web", "Api", "group/mobile", "deep/a/b", ".hidden/c", "node_modules/d"] {
+            let dir = plain.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            git_checked(&dir, &["init"]).unwrap();
+        }
+        std::fs::create_dir_all(plain.join("web/packages/inner/.git")).unwrap();
+        std::fs::write(plain.join("notes.txt"), "").unwrap();
+
+        assert_eq!(nested_repos(&plain).unwrap(), ["Api", "group/mobile", "web"]);
+        assert_eq!(nested_repos(&repo.0.join("repo")), None);
+        assert_eq!(nested_repos(&plain.join("notes.txt")), None);
     }
 
     #[test]

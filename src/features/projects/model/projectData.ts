@@ -21,6 +21,10 @@ import {
   clearProjectSidebarTab,
   rebaseProjectSidebarTab,
 } from "../../settings/model/projectSidebarTab";
+import {
+  clearNestedChangesRepo,
+  rebaseNestedChangesRepo,
+} from "../../source-control/model/nestedRepos";
 
 /** Saved chats filed under this project, so the confirm prompt can count them. */
 export async function projectSessionCount(path: string): Promise<number> {
@@ -44,6 +48,7 @@ export async function removeProjectData(path: string): Promise<void> {
   removeProjectGroupAssignment(normalized);
   clearProjectProviders(key);
   clearProjectSidebarTab(normalized);
+  clearNestedChangesRepo(normalized);
 }
 
 /** Move local project settings after the filesystem resolver finds a rename. */
@@ -56,4 +61,5 @@ export function rebaseProjectData(from: string, to: string): void {
   rebaseSessionFolderSettings(from, to);
   rebaseProjectProviders(oldKey, newKey);
   rebaseProjectSidebarTab(from, to);
+  rebaseNestedChangesRepo(from, to);
 }

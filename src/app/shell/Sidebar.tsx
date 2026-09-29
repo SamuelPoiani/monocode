@@ -215,6 +215,13 @@ type Props = {
   cwd: string;
   /** Working copy for Changes / explorer git. Falls back to `cwd`. */
   gitCwd?: string;
+  /** Working copy for Changes when it differs from `gitCwd`. */
+  changesCwd?: string;
+  /** Repositories nested in a plain project folder, relative to it; empty
+   * when it holds none. Absent when `gitCwd` is a repository. */
+  changesRepos?: string[];
+  changesRepo?: string;
+  onChangesRepoChange?: (repo: string) => void;
   /** Branch identity shown for a worktree whose folder has a temporary name. */
   explorerRootLabel?: string;
   open: boolean;
@@ -317,6 +324,10 @@ type Props = {
 function SidebarComponent({
   cwd,
   gitCwd,
+  changesCwd,
+  changesRepos,
+  changesRepo,
+  onChangesRepoChange,
   explorerRootLabel,
   open,
   sessions,
@@ -522,6 +533,7 @@ function SidebarComponent({
     remoteProject && hostProject
       ? remotePath(hostProject.environmentId, remoteExecutionCwd ?? hostProject.cwd)
       : gitCwd || cwd;
+  const changesRoot = remoteProject ? gitRoot : changesCwd || gitRoot;
   const resize = useDragResize({
     min: MIN_WIDTH,
     max: () => Math.min(MAX_WIDTH, Math.floor(window.innerWidth * 0.5)),
@@ -759,7 +771,7 @@ function SidebarComponent({
   const drawerAnimation = useRef<Animation | null>(null);
   const panelOpen = open || drawerVisible;
   const gitStatuses = useGitFileStatuses(gitRoot, panelOpen && tab === "files");
-  const changeStats = useProjectDiffStats(gitRoot, panelOpen);
+  const changeStats = useProjectDiffStats(changesRoot, panelOpen);
 
   useEffect(() => {
     if (!drawerMode || !sidebarAvailable) setDrawerOpen(false);
@@ -1999,7 +2011,10 @@ function SidebarComponent({
         {tab === "changes" ? (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <SourceControl
-                cwd={gitRoot}
+                cwd={changesRoot}
+                repos={changesRepos}
+                repo={changesRepo}
+                onRepoChange={onChangesRepoChange}
                 enabled={panelOpen}
                 textHarness={textHarness}
                 selectedPath={selectedDiffPath}

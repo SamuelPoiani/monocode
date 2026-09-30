@@ -124,6 +124,11 @@ export type OrchestrationRun = {
   error?: string;
   continuations: number;
   lastPauseReason?: string;
+  /**
+   * Why a paused run stopped: a provider usage limit hit by the lead or one
+   * of its workers. Resume clears it.
+   */
+  usageLimit?: { sessionId: string; resetsAt?: number };
   requests: Record<string, { signature: string; result: unknown }>;
 };
 

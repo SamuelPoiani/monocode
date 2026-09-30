@@ -45,6 +45,8 @@ export type ControlOutcome = {
   status: "completed" | "failed" | "cancelled";
   text: string;
   error?: string;
+  /** The turn was refused by the provider's usage limit, not by the work. */
+  usageLimited?: { resetsAt?: number };
 };
 export type WorkerPreparation = {
   scratchDir?: string;
@@ -205,6 +207,19 @@ const turnOf = (run: OrchestrationRun, taskId: string) =>
 
 const recoveryTurn = (reason: string) =>
   `Continue the existing assignment from its retained worker checkout. The previous turn was stopped because the orchestration run was interrupted: ${reason}\n\nInspect the current files and prior conversation before acting. Preserve completed work, do not repeat destructive or external operations, remain inside the assigned write scope, run the remaining focused checks, and report what was already done versus what you completed now.`;
+
+/** Absolute, so the saved reason still reads right after the reset. */
+const usageLimitReason = (who: string, resetsAt?: number) =>
+  `${who} hit the provider's usage limit${
+    resetsAt != null
+      ? `; it resets ${new Date(resetsAt).toLocaleString(undefined, {
+          month: "short",
+          day: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+        })}`
+      : ""
+  }. Its agents were stopped with their checkouts retained; resume the run once the limit resets.`;
 
 const ASSIGNMENT_BLOCK =
   /(?:\r?\n[ \t]*)*<monocode_assignment\b[^>]*>[\s\S]*?<\/monocode_assignment>/gi;
@@ -1859,6 +1874,43 @@ export class Orchestrator {
     }
     this.writeChecks.delete(dispatchId);
     const run = this.run(leadId)!;
+    if (outcome.usageLimited) {
+      // The provider refused the turn, not the work: keep it resumable and
+      // stop dispatching into the same exhausted account.
+      const { resetsAt } = outcome.usageLimited;
+      const reason = usageLimitReason(task.title, resetsAt);
+      await this.commit({
+        ...run,
+        tasks: run.tasks.map((entry) =>
+          entry.id === taskId
+            ? {
+                ...entry,
+                status: "interrupted",
+                result: outcome.text.slice(-20_000),
+                error: reason,
+                recoveryPrompt: recoveryTurn(reason),
+                delivered: true,
+                accepted: false,
+                activeDispatchId: undefined,
+                lastDispatchId: dispatchId,
+              }
+            : entry,
+        ),
+        dispatches: (run.dispatches ?? []).map((dispatch) =>
+          dispatch.id === dispatchId
+            ? {
+                ...dispatch,
+                state: "interrupted",
+                stage: "settled",
+                updatedAt: Date.now(),
+                error: reason,
+              }
+            : dispatch,
+        ),
+      });
+      this.pauseForUsageLimit(task.sessionId, resetsAt);
+      return;
+    }
     await this.commit({
       ...run,
       tasks: run.tasks.map((entry) =>
@@ -2032,7 +2084,13 @@ export class Orchestrator {
     patch?: (run: OrchestrationRun) => OrchestrationRun,
   ) {
     const run = this.run(leadId);
-    if (!run || run.status !== "active") return;
+    if (!run) return;
+    if (run.status !== "active") {
+      // Something else paused first, such as a usage limit seen mid-turn.
+      // Keep its reason, but not at the cost of this caller's repair.
+      if (run.status === "paused" && patch) await this.commit(patch(run));
+      return;
+    }
     await this.commit({
       ...(patch ? patch(run) : run),
       status: "paused",
@@ -2045,6 +2103,51 @@ export class Orchestrator {
       (entry) => entry.status === "running",
     ))
       await this.interruptTask(leadId, task.id, error);
+  }
+  /**
+   * A lead or worker turn was refused by its provider's usage limit. Every
+   * later turn on that account would be refused too, so the whole run pauses
+   * instead of reading as running with nothing able to make progress. Returns
+   * the lead it paused, if any.
+   */
+  pauseForUsageLimit(id: string, resetsAt?: number): string | null {
+    const run = this.forSession(id);
+    if (!run || run.status !== "active") return null;
+    const who =
+      run.leadId === id
+        ? "The lead"
+        : (run.tasks.find((task) => task.sessionId === id)?.title ??
+          "A worker");
+    const reason = usageLimitReason(who, resetsAt);
+    void this.pause(run.leadId, reason, (current) => ({
+      ...current,
+      usageLimit: { sessionId: id, ...(resetsAt != null ? { resetsAt } : {}) },
+    })).catch(console.error);
+    return run.leadId;
+  }
+  /**
+   * Resume a run a usage limit paused. Interrupted workers continue from
+   * their checkouts; the lead gets a turn only if its own was cut off and no
+   * worker result is about to wake it anyway.
+   */
+  async resumeAfterUsageLimit(leadId: string) {
+    const run = this.run(leadId);
+    if (run?.status !== "paused" || !run.usageLimit) return;
+    const leadLimited = run.usageLimit.sessionId === leadId;
+    await this.start(leadId, run.allowedHarnesses, run.maxWorkers);
+    if (!leadLimited || this.waking.has(leadId)) return;
+    this.host!.submit(
+      leadId,
+      "The usage limit has reset and the orchestration run was resumed. Continue supervising from where you left off.",
+      (outcome) => {
+        if (outcome.status !== "completed")
+          void this.pause(
+            leadId,
+            outcome.error ??
+              "The lead was interrupted. Its agents were stopped; review and resume the run.",
+          ).catch(console.error);
+      },
+    );
   }
   async stopRun(leadId: string) {
     const run = this.run(leadId);

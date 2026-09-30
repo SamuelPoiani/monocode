@@ -6650,7 +6650,8 @@ export default function App({
         const planEventKey = planTurnKey(gen);
         let nativePlanSeen = false;
         let providerFailureSeen = false;
-        const routePlanEvent = (event: HarnessEvent): HarnessEvent | null => {
+        let usageLimited: ControlOutcome["usageLimited"];
+        const routePlanEvent =(event: HarnessEvent): HarnessEvent | null => {
           if (event.type === "session.error") providerFailureSeen = true;
           if (proposalDraft) {
             if (event.type === "message.delta") {
@@ -6688,6 +6689,19 @@ export default function App({
             controlText += "\n";
           if (event.type === "session.error")
             controlOutcome.error = event.message;
+          if (event.type === "usage.limited") {
+            usageLimited =
+              event.resetsAt != null ? { resetsAt: event.resetsAt } : {};
+            // Any turn in a run can hit it, including the user's own follow-up
+            // to the lead, so pause here rather than in each settle callback.
+            const leadId = orchestrator.pauseForUsageLimit(
+              sessionId,
+              event.resetsAt,
+            );
+            // The run is watched from its lead, so a worker's limit shows there.
+            if (leadId && leadId !== sessionId)
+              enqueueHarnessEvent(leadId, event);
+          }
           if (
             wrap &&
             (event.type === "session.started" ||
@@ -6924,6 +6938,7 @@ export default function App({
                 : "completed",
             text: controlText.trim(),
             ...(providerFailureSeen ? { error: controlOutcome.error } : {}),
+            ...(usageLimited ? { usageLimited } : {}),
           };
           // A failed provider can leave its process alive with a dead event
           // stream or poisoned turn state. Park it now; the next prompt will
@@ -7618,9 +7633,26 @@ export default function App({
       );
       if (!session?.usageLimit || session.busy) return;
       onUsageLimitDismiss(sessionId);
+      // A paused run rejects a plain continue; resume the run it paused.
+      const run = orchestrator.forSession(sessionId);
+      if (run?.status === "paused" && run.usageLimit) {
+        onUsageLimitDismiss(run.leadId);
+        void orchestrator
+          .resumeAfterUsageLimit(run.leadId)
+          .catch((error: unknown) => {
+            enqueueHarnessEvent(run.leadId, {
+              type: "status",
+              text: `Could not resume orchestration: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            });
+            flushHarnessEvents();
+          });
+        return;
+      }
       onSubmit(sessionId, CONTINUE_PROMPT);
     },
-    [onSubmit, onUsageLimitDismiss],
+    [enqueueHarnessEvent, flushHarnessEvents, onSubmit, onUsageLimitDismiss],
   );
 
   const [usageLimitTick, setUsageLimitTick] = useState(0);

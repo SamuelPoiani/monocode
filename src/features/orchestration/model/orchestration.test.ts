@@ -1301,6 +1301,136 @@ describe("local orchestration", () => {
     );
     await restored.stopRun("lead");
   });
+  it("pauses the run when the lead's own turn hits a usage limit", async () => {
+    const f = setup();
+    await f.start();
+    await f.delegate(["a"]);
+    await vi.waitFor(() => expect(f.tasks()[0].status).toBe("running"));
+    const worker = f.tasks()[0];
+    // A follow-up the user typed has no settle callback; the event is all there is.
+    expect(f.manager.pauseForUsageLimit("lead", 1_900_000_000_000)).toBe(
+      "lead",
+    );
+    expect(f.manager.run("lead")!.status).toBe("paused");
+    expect(f.manager.run("lead")!.usageLimit).toEqual({
+      sessionId: "lead",
+      resetsAt: 1_900_000_000_000,
+    });
+    expect(f.manager.run("lead")!.error).toContain(
+      "The lead hit the provider's usage limit",
+    );
+    await vi.waitFor(() => expect(f.tasks()[0].status).toBe("interrupted"));
+    expect(f.host.stop).toHaveBeenCalledWith(worker.sessionId);
+    expect(f.tasks()[0].recoveryPrompt).toContain(
+      "Continue the existing assignment",
+    );
+    // Already paused: a second limit event changes nothing.
+    expect(f.manager.pauseForUsageLimit("lead")).toBeNull();
+    await f.manager.stopRun("lead");
+  });
+  it("keeps a worker refused by its usage limit resumable and stops dispatching", async () => {
+    const f = setup();
+    await f.start();
+    await f.delegate(["a"]);
+    await f.delegate(["b"]);
+    await f.delegate(["c"]);
+    await vi.waitFor(() => expect(f.host.createWorker).toHaveBeenCalledTimes(2));
+    const [limited, other, queued] = f.tasks();
+    f.lead.busy = false;
+    f.completions.get(limited.sessionId)!({
+      status: "failed",
+      text: "Partial work",
+      error: "You've hit your limit",
+      usageLimited: {},
+    });
+    await vi.waitFor(() =>
+      expect(f.manager.run("lead")!.status).toBe("paused"),
+    );
+    await vi.waitFor(() =>
+      expect(f.tasks().find((task) => task.id === other.id)!.status).toBe(
+        "interrupted",
+      ),
+    );
+    const settled = f.tasks().find((task) => task.id === limited.id)!;
+    expect(settled.status).toBe("interrupted");
+    expect(settled.result).toBe("Partial work");
+    expect(settled.recoveryPrompt).toContain("usage limit");
+    expect(f.manager.run("lead")!.usageLimit).toEqual({
+      sessionId: limited.sessionId,
+    });
+    expect(f.tasks().find((task) => task.id === queued.id)!.status).toBe(
+      "queued",
+    );
+    // Neither a new worker nor the lead is sent into the exhausted account.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(f.host.createWorker).toHaveBeenCalledTimes(2);
+    expect(
+      vi.mocked(f.host.submit).mock.calls.filter(([id]) => id === "lead"),
+    ).toHaveLength(0);
+    await f.manager.stopRun("lead");
+  });
+  it("keeps undelivered results when a usage limit paused the run first", async () => {
+    const f = setup();
+    await f.start();
+    await f.delegate(["a"]);
+    await vi.waitFor(() => expect(f.host.submit).toHaveBeenCalledTimes(1));
+    f.lead.busy = false;
+    f.completions.get(f.tasks()[0].sessionId)!({
+      status: "completed",
+      text: "Result",
+    });
+    await vi.waitFor(() => expect(f.host.submit).toHaveBeenCalledTimes(2));
+    f.manager.pauseForUsageLimit("lead");
+    f.completions.get("lead")!({
+      status: "failed",
+      text: "",
+      error: "You've hit your limit",
+      usageLimited: {},
+    });
+    await vi.waitFor(() => expect(f.tasks()[0].delivered).toBe(false));
+    expect(f.manager.run("lead")!.error).toContain("usage limit");
+  });
+  it("resumes a usage-limited run and continues a lead that was cut off", async () => {
+    const f = setup();
+    await f.start();
+    f.manager.pauseForUsageLimit("lead");
+    await vi.waitFor(() =>
+      expect(f.saved.get("lead")?.status).toBe("paused"),
+    );
+    f.lead.busy = false;
+    await f.manager.resumeAfterUsageLimit("lead");
+    expect(f.manager.run("lead")!.status).toBe("active");
+    expect(f.manager.run("lead")!.usageLimit).toBeUndefined();
+    const [id, text] = vi.mocked(f.host.submit).mock.calls.at(-1)!;
+    expect(id).toBe("lead");
+    expect(text).toContain("usage limit has reset");
+    await f.manager.stopRun("lead");
+  });
+  it("resumes a worker's usage-limited run without prompting an idle lead", async () => {
+    const f = setup();
+    await f.start();
+    await f.delegate(["a"]);
+    await vi.waitFor(() => expect(f.host.submit).toHaveBeenCalledTimes(1));
+    const worker = f.tasks()[0];
+    f.completions.get(worker.sessionId)!({
+      status: "failed",
+      text: "",
+      usageLimited: { resetsAt: 1_900_000_000_000 },
+    });
+    await vi.waitFor(() =>
+      expect(f.manager.run("lead")!.status).toBe("paused"),
+    );
+    f.lead.busy = false;
+    await f.manager.resumeAfterUsageLimit("lead");
+    await vi.waitFor(() => expect(f.host.submit).toHaveBeenCalledTimes(2));
+    const [id, text] = vi.mocked(f.host.submit).mock.calls[1];
+    expect(id).toBe(worker.sessionId);
+    expect(text).toContain("Continue the existing assignment");
+    expect(
+      vi.mocked(f.host.submit).mock.calls.filter(([id]) => id === "lead"),
+    ).toHaveLength(0);
+    await f.manager.stopRun("lead");
+  });
   it("does not claim a turn or run is successful before review", async () => {
     const f = setup();
     await f.start();

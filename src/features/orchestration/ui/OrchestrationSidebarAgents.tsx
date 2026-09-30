@@ -286,11 +286,13 @@ export function OrchestrationSidebarAgents({
               }
               onClick={() =>
                 void perform(() =>
-                  orchestrator.start(
-                    leadId,
-                    run.allowedHarnesses,
-                    run.maxWorkers,
-                  ),
+                  run.usageLimit
+                    ? orchestrator.resumeAfterUsageLimit(leadId)
+                    : orchestrator.start(
+                        leadId,
+                        run.allowedHarnesses,
+                        run.maxWorkers,
+                      ),
                 )
               }
             >

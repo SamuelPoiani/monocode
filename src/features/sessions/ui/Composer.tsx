@@ -236,6 +236,8 @@ type Props = {
   orchestratorMode?: boolean;
   /** Where the next message goes; undefined when this is not an orchestrator. */
   orchestratorStatus?: OrchestratorStatus;
+  /** The paused run is waiting out a provider usage limit. */
+  orchestratorUsageLimited?: boolean;
   onOrchestratorModeChange?: (on: boolean) => void;
   /** Keeps local file mentions, skills, and app modes off for host sessions. */
   remoteSession?: boolean;
@@ -531,6 +533,7 @@ export function Composer({
   hideTopBar = false,
   orchestratorMode = false,
   orchestratorStatus,
+  orchestratorUsageLimited = false,
   onOrchestratorModeChange,
   remoteSession = false,
   remoteFeatures,
@@ -2554,12 +2557,20 @@ export function Composer({
             ) : null}
             {!compact && orchestratorRunActive && (
               <span
-                title="Messages go to the lead of the active run"
+                title={
+                  orchestratorStatus === "paused" && orchestratorUsageLimited
+                    ? "Paused by a provider usage limit; resume once it resets"
+                    : "Messages go to the lead of the active run"
+                }
                 className="flex h-6.5 shrink-0 items-center gap-1 rounded-md bg-fuchsia-500/15 px-1.5 text-[11px] font-medium text-fuchsia-700 dark:bg-fuchsia-400/10 dark:text-fuchsia-200/90"
               >
                 <Share className="size-3.5" />
                 Orchestrator ·{" "}
-                {orchestratorStatus === "running" ? "Running" : "Paused"}
+                {orchestratorStatus === "running"
+                  ? "Running"
+                  : orchestratorUsageLimited
+                    ? "Paused · Usage limit"
+                    : "Paused"}
               </span>
             )}
             {!compact && !orchestratorRunActive && orchestrationActive ? (

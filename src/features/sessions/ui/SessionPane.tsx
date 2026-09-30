@@ -341,6 +341,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
   const orchestratorState = canOrchestrate
     ? orchestratorStatus(orchestrationRuns, session.id, orchestratorMode)
     : undefined;
+  const orchestratorUsageLimited =
+    orchestratorState === "paused" &&
+    !!orchestrationRuns.find((run) => run.leadId === session.id)?.usageLimit;
   const title = sessionDisplayTitle(session.title, session.harness);
   const isEmpty = session.blocks.length === 0;
   const recallLastTurnRef = useRef<(() => void) | null>(null);
@@ -592,6 +595,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       hideTopBar={!!session.inboxAsk}
       orchestratorMode={orchestratorMode}
       orchestratorStatus={orchestratorState}
+      orchestratorUsageLimited={orchestratorUsageLimited}
       onOrchestratorModeChange={
         canOrchestrate ? (on) => setOrchestratorMode(session.id, on) : undefined
       }

@@ -1035,6 +1035,7 @@ describe("Composer question focus", () => {
     const render = (
       orchestratorMode: boolean,
       orchestratorStatus?: "idle" | "running" | "paused",
+      orchestratorUsageLimited = false,
     ) =>
       act(async () =>
         root.render(
@@ -1048,6 +1049,7 @@ describe("Composer question focus", () => {
             hideBranchPicker: true,
             orchestratorMode,
             orchestratorStatus,
+            orchestratorUsageLimited,
             onOrchestratorModeChange,
             onFocus: vi.fn(),
             onCwdChange: vi.fn(),
@@ -1110,6 +1112,15 @@ describe("Composer question focus", () => {
     expect(
       container.querySelector('[aria-label="Turn off Orchestrator mode"]'),
     ).toBeNull();
+
+    // A run paused by a usage limit says so instead of a bare "Paused".
+    await render(true, "paused");
+    expect(container.textContent).toContain("Orchestrator · Paused");
+    expect(container.textContent).not.toContain("Usage limit");
+    await render(true, "paused", true);
+    expect(container.textContent).toContain(
+      "Orchestrator · Paused · Usage limit",
+    );
 
     await render(true, "idle");
     await act(async () =>

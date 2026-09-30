@@ -1,8 +1,9 @@
 #[cfg(test)]
 use std::collections::HashMap;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -16,6 +17,8 @@ use crate::fs::{
 };
 
 const MAX_SNAPSHOT_FILES: usize = 500;
+/// Matches the control service's per-task limit.
+const MAX_WRITE_SCOPES: usize = 64;
 
 #[derive(Clone)]
 pub struct CheckpointStore {
@@ -46,7 +49,9 @@ impl CheckpointStore {
         self.root.join(session_id)
     }
 
-    fn ensure(&self, session_id: &str, cwd: &str) -> Result<(), String> {
+    /// `isolated` marks a checkout only this session writes: an orchestration
+    /// worker's worktree. Its turn-start contents stay the baseline.
+    fn ensure(&self, session_id: &str, cwd: &str, isolated: bool) -> Result<(), String> {
         let root = project_root(cwd)?;
         let dir = self.session_dir(session_id);
         if let Some(manifest) = read_manifest(&dir)? {
@@ -82,6 +87,7 @@ impl CheckpointStore {
                 after: BTreeMap::new(),
                 stats: BTreeMap::new(),
                 diverged: BTreeSet::new(),
+                isolated,
             },
         )
     }
@@ -102,6 +108,21 @@ impl CheckpointStore {
             let Ok(relative) = relative_to_root(&root, path) else {
                 continue;
             };
+            if manifest.isolated {
+                // Nothing else writes an isolated checkout, so its baseline is
+                // what the session started from, even when the session already
+                // changed this file through a shell command.
+                if !manifest.files.contains_key(&relative) {
+                    let before = snapshot_checkout_file(&dir, &root, &relative)?;
+                    manifest.files.insert(relative.clone(), before);
+                    dirty = true;
+                }
+                dirty |= manifest.prepared.insert(relative.clone());
+                if in_head(&root, &relative) {
+                    dirty |= manifest.tracked.insert(relative);
+                }
+                continue;
+            }
             // Keep the original pre-edit snapshot across later edits by this
             // session. The first tool-start event owns the safe undo boundary.
             if manifest.touched.contains(&relative) && manifest.prepared.contains(&relative) {
@@ -199,11 +220,73 @@ impl CheckpointStore {
         ))
     }
 
+    /// Record an isolated worker's whole turn when its dispatch completes.
+    /// Nothing else writes its checkout, so every in-scope difference from the
+    /// baseline is the worker's own, including edits made through shell
+    /// commands that never reported a tool event. Changes outside `scopes` are
+    /// never claimed, and integration keeps rejecting them.
+    fn reconcile(&self, session_id: &str, cwd: &str, scopes: &[String]) -> Result<(), String> {
+        let Some(mut manifest) = self.load_matching(session_id, cwd)? else {
+            return Ok(());
+        };
+        let root = project_root(cwd)?;
+        let dir = self.session_dir(session_id);
+        let scopes = write_scopes(&root, scopes)?;
+        manifest.isolated = true;
+
+        let mut candidates: BTreeSet<String> = git_diff_files_for(&root)
+            .files
+            .into_iter()
+            .map(|file| file.relative)
+            .collect();
+        candidates.extend(manifest.files.keys().cloned());
+        candidates.extend(manifest.touched.iter().cloned());
+        for relative in candidates {
+            let Ok(relative) = resolve_repo_path(&root, &relative) else {
+                continue;
+            };
+            if !in_write_scope(&scopes, &relative) {
+                continue;
+            }
+            let touched = manifest.touched.contains(&relative);
+            if !touched && manifest.touched.len() >= MAX_SNAPSHOT_FILES {
+                continue;
+            }
+            let before = match manifest.files.get(&relative) {
+                Some(kind) => *kind,
+                None => snapshot_checkout_file(&dir, &root, &relative)?,
+            };
+            if !touched
+                && worktree_snapshot(&root, &relative)
+                    == stored_snapshot(&dir, &relative, before, false)
+            {
+                continue;
+            }
+            manifest.files.insert(relative.clone(), before);
+            manifest.touched.insert(relative.clone());
+            manifest.prepared.insert(relative.clone());
+            if in_head(&root, &relative) {
+                manifest.tracked.insert(relative.clone());
+            }
+            let after = snapshot_after_file(&dir, &root, &relative)?;
+            manifest.after.insert(relative.clone(), after);
+            // Divergence between two tool edits was this worker's own shell
+            // edit; the turn-end snapshot above is exact again.
+            manifest.diverged.remove(&relative);
+            match calculate_session_stats(&dir, &manifest, &relative) {
+                Some(stats) => manifest.stats.insert(relative, stats),
+                None => manifest.stats.remove(&relative),
+            };
+        }
+        write_manifest(&dir, &manifest)
+    }
+
     fn apply(
         &self,
         session_id: &str,
         from_cwd: &str,
         to_cwd: &str,
+        scopes: &[String],
     ) -> Result<CheckpointApplyResult, String> {
         let manifest = self
             .load_matching(session_id, from_cwd)?
@@ -221,11 +304,23 @@ impl CheckpointStore {
         }
         let dir = self.session_dir(session_id);
         let changed = verified_worker_delta(&dir, &from_root, &manifest)?;
+        let scopes = write_scopes(&from_root, scopes)?;
+        if let Some(relative) = changed
+            .iter()
+            .find(|relative| !in_write_scope(&scopes, relative))
+        {
+            return Err(format!(
+                "Cannot integrate {relative}: it is outside this task's write scope. The worker worktree was kept."
+            ));
+        }
 
         // Preflight every path before writing any of them. A retry may see a
         // mixture of before/after states if the app stopped during a previous
         // application; both are safe and make this operation idempotent.
+        // Byte equality decides first; otherwise Git's own view does, so a
+        // checkout's line-ending conversion is not mistaken for a lead edit.
         let mut already_applied = 0;
+        let mut writes = Vec::new();
         for relative in &changed {
             if path_contains_symlink(&to_root, relative) {
                 return Err(format!(
@@ -247,20 +342,24 @@ impl CheckpointStore {
             let after_state = stored_snapshot(&dir, relative, after, true);
             if target == after_state {
                 already_applied += 1;
-            } else if target != before_state {
+            } else if target == before_state {
+                writes.push((relative, after_state));
+            } else if same_in_git(&to_root, relative, &target, &after_state) {
+                already_applied += 1;
+            } else if same_in_git(&to_root, relative, &target, &before_state) {
+                writes.push((
+                    relative,
+                    in_lead_line_endings(&before_state, &target, after_state),
+                ));
+            } else {
                 return Err(format!(
                     "Cannot integrate {relative}: the lead checkout changed since this worker started. The worker worktree was kept."
                 ));
             }
         }
 
-        for relative in &changed {
-            let after = manifest.after.get(relative).copied().unwrap();
-            let target = worktree_snapshot(&to_root, relative);
-            let after_state = stored_snapshot(&dir, relative, after, true);
-            if target != after_state {
-                write_state(&to_root, relative, after_state.0, after_state.1)?;
-            }
+        for (relative, (state, mode)) in writes {
+            write_state(&to_root, relative, state, mode)?;
         }
         Ok(CheckpointApplyResult {
             files: changed,
@@ -496,6 +595,10 @@ struct Manifest {
     /// Paths whose contents changed between two edits by this session.
     #[serde(default)]
     diverged: BTreeSet<String>,
+    /// Only this session writes the checkout (an orchestration worker's
+    /// worktree), so every difference from its baseline is the session's own.
+    #[serde(default)]
+    isolated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -576,11 +679,13 @@ pub async fn session_checkpoint_ensure(
     store: State<'_, CheckpointStore>,
     session_id: String,
     cwd: String,
+    isolated: Option<bool>,
 ) -> Result<(), String> {
     validate_id(&session_id, "session")?;
     let store = store.inner().clone();
+    let isolated = isolated.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
-        store.exclusive(|store| store.ensure(&session_id, &cwd))
+        store.exclusive(|store| store.ensure(&session_id, &cwd, isolated))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -639,17 +744,42 @@ pub async fn session_checkpoint_status(
     .map_err(|e| e.to_string())?
 }
 
+/// Capture an isolated worker checkout at turn end. Only call this for a
+/// checkout no other session writes.
+#[tauri::command]
+pub async fn session_checkpoint_reconcile(
+    store: State<'_, CheckpointStore>,
+    session_id: String,
+    cwd: String,
+    scopes: Vec<String>,
+) -> Result<(), String> {
+    validate_id(&session_id, "session")?;
+    if scopes.len() > MAX_WRITE_SCOPES {
+        return Err("Too many write scopes".into());
+    }
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        store.exclusive(|store| store.reconcile(&session_id, &cwd, &scopes))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn session_checkpoint_apply(
     store: State<'_, CheckpointStore>,
     session_id: String,
     from_cwd: String,
     to_cwd: String,
+    scopes: Vec<String>,
 ) -> Result<CheckpointApplyResult, String> {
     validate_id(&session_id, "session")?;
+    if scopes.len() > MAX_WRITE_SCOPES {
+        return Err("Too many write scopes".into());
+    }
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        store.exclusive(|store| store.apply(&session_id, &from_cwd, &to_cwd))
+        store.exclusive(|store| store.apply(&session_id, &from_cwd, &to_cwd, &scopes))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -760,7 +890,7 @@ fn verified_worker_delta(
         .find(|relative| !manifest.files.contains_key(*relative))
     {
         return Err(format!(
-            "Cannot safely integrate {relative}: its change was not captured for this worker. The worker worktree was kept."
+            "Cannot safely integrate {relative}: its change was not captured for this worker. Only changes inside the task's write scope are integrated: have the worker revert it, or retry with corrected files if it is required. The worker worktree was kept."
         ));
     }
 
@@ -810,6 +940,147 @@ fn verified_worker_delta(
     }
     changed.sort();
     Ok(changed)
+}
+
+/// A task's write scopes as checkout-relative paths. An empty scope stands
+/// for the whole checkout; a directory covers its descendants.
+fn write_scopes(root: &Path, scopes: &[String]) -> Result<Vec<String>, String> {
+    scopes
+        .iter()
+        .map(|scope| {
+            let slashed = scope.trim().replace('\\', "/");
+            let trimmed = slashed.trim_start_matches("./").trim_end_matches('/');
+            if trimmed.is_empty() || trimmed == "." {
+                return Ok(String::new());
+            }
+            resolve_repo_path(root, trimmed).map_err(|_| format!("Invalid write scope \"{scope}\""))
+        })
+        .collect()
+}
+
+fn in_write_scope(scopes: &[String], relative: &str) -> bool {
+    let relative = scope_key(relative);
+    scopes.iter().any(|scope| {
+        let scope = scope_key(scope);
+        scope.is_empty()
+            || relative
+                .strip_prefix(scope.as_str())
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    })
+}
+
+/// Scopes compare like the control service's canonical paths: ignoring case
+/// on Windows only.
+fn scope_key(path: &str) -> String {
+    if cfg!(windows) {
+        path.to_lowercase()
+    } else {
+        path.to_string()
+    }
+}
+
+/// Whether Git sees the same file in both states: equal bytes, or contents
+/// its clean filters store as one blob, such as the line endings
+/// `core.autocrlf` converts. Like Git, only the executable bit of a mode counts.
+fn same_in_git(
+    root: &Path,
+    relative: &str,
+    left: &(FileState, Option<u32>),
+    right: &(FileState, Option<u32>),
+) -> bool {
+    if left == right {
+        return true;
+    }
+    let (
+        (FileState::Contents(left_bytes), left_mode),
+        (FileState::Contents(right_bytes), right_mode),
+    ) = (left, right)
+    else {
+        return false;
+    };
+    let executable = |mode: &Option<u32>| mode.map(|mode| mode & 0o111 != 0);
+    executable(left_mode) == executable(right_mode)
+        && matches!(
+            (
+                git_blob_id(root, relative, left_bytes),
+                git_blob_id(root, relative, right_bytes),
+            ),
+            (Some(left), Some(right)) if left == right
+        )
+}
+
+/// The object ID Git would store for `bytes` at `relative` in this checkout.
+fn git_blob_id(root: &Path, relative: &str, bytes: &[u8]) -> Option<Vec<u8>> {
+    let mut command = Command::new("git");
+    crate::hide_window_console(&mut command);
+    let mut child = command
+        .arg("-C")
+        .arg(root)
+        .args(["-c", "core.safecrlf=false", "hash-object", "--stdin"])
+        .arg(format!("--path={relative}"))
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let written = child.stdin.take()?.write_all(bytes);
+    let output = child.wait_with_output().ok()?;
+    (written.is_ok() && output.status.success()).then_some(output.stdout)
+}
+
+/// The worker's result in the lead file's line-ending style. A lead file
+/// checked out under another `core.autocrlf` setting can differ from the
+/// worker's fresh checkout only in line endings; writing the worker's bytes
+/// verbatim would flip every line of it.
+fn in_lead_line_endings(
+    before: &(FileState, Option<u32>),
+    target: &(FileState, Option<u32>),
+    after: (FileState, Option<u32>),
+) -> (FileState, Option<u32>) {
+    let (FileState::Contents(before), FileState::Contents(target)) = (&before.0, &target.0) else {
+        return after;
+    };
+    let (FileState::Contents(result), mode) = after else {
+        return after;
+    };
+    if before == target
+        || [before, target, &result]
+            .iter()
+            .any(|bytes| bytes.contains(&0))
+    {
+        return (FileState::Contents(result), mode);
+    }
+    let converted = if crlf_to_lf(before) == *target {
+        crlf_to_lf(&result)
+    } else if lf_to_crlf(before) == *target {
+        lf_to_crlf(&result)
+    } else {
+        result
+    };
+    (FileState::Contents(converted), mode)
+}
+
+fn crlf_to_lf(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte != b'\r' || bytes.get(index + 1) != Some(&b'\n') {
+            out.push(*byte);
+        }
+    }
+    out
+}
+
+fn lf_to_crlf(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len() + bytes.len() / 16);
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte == b'\n' && (index == 0 || bytes[index - 1] != b'\r') {
+            out.push(b'\r');
+        }
+        out.push(*byte);
+    }
+    out
 }
 
 fn write_state(
@@ -1166,6 +1437,87 @@ fn snapshot_after_file(dir: &Path, root: &Path, relative: &str) -> Result<Snapsh
     snapshot_file_at(&dir.join("after"), root, relative)
 }
 
+/// Snapshot what a fresh checkout of HEAD holds at `relative`, after the
+/// smudge and line-ending filters the checkout applies. An isolated worker
+/// started from exactly this for every path that was clean at its first turn.
+fn snapshot_checkout_file(dir: &Path, root: &Path, relative: &str) -> Result<SnapshotKind, String> {
+    let blob = state_blob_path(&dir.join("files"), relative)?;
+    if let Some(parent) = blob.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let unreadable = || format!("Could not read {relative} from HEAD");
+    let listing = git_stdout(
+        root,
+        &[
+            "--literal-pathspecs",
+            "ls-tree",
+            "-l",
+            "-z",
+            "HEAD",
+            "--",
+            relative,
+        ],
+    )
+    .ok_or_else(unreadable)?;
+    // Each record is "<mode> <type> <object> <size>\t<path>".
+    let entry = listing.split(|byte| *byte == 0).find_map(|record| {
+        let tab = record.iter().position(|byte| *byte == b'\t')?;
+        (&record[tab + 1..] == relative.as_bytes())
+            .then(|| String::from_utf8_lossy(&record[..tab]).into_owned())
+    });
+    let Some(entry) = entry else {
+        std::fs::write(&blob, []).map_err(|e| e.to_string())?;
+        return Ok(SnapshotKind::Missing);
+    };
+    let fields: Vec<&str> = entry.split_whitespace().collect();
+    let [mode, kind, _, size] = fields[..] else {
+        return Ok(SnapshotKind::Skipped);
+    };
+    if kind != "blob"
+        || mode == "120000"
+        || size
+            .parse::<u64>()
+            .map_or(true, |size| size > MAX_TEXT_FILE_BYTES)
+    {
+        return Ok(SnapshotKind::Skipped);
+    }
+    let bytes = git_stdout(
+        root,
+        &["cat-file", "--filters", &format!("HEAD:{relative}")],
+    )
+    .ok_or_else(unreadable)?;
+    if bytes.len() as u64 > MAX_TEXT_FILE_BYTES {
+        return Ok(SnapshotKind::Skipped);
+    }
+    std::fs::write(&blob, bytes).map_err(|e| e.to_string())?;
+    set_file_mode(&blob, checkout_mode(mode))?;
+    Ok(SnapshotKind::Contents)
+}
+
+fn git_stdout(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
+    let mut command = Command::new("git");
+    crate::hide_window_console(&mut command);
+    let output = command
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .ok()?;
+    output.status.success().then_some(output.stdout)
+}
+
+#[cfg(unix)]
+fn checkout_mode(git_mode: &str) -> Option<u32> {
+    Some(if git_mode == "100755" { 0o755 } else { 0o644 })
+}
+
+#[cfg(not(unix))]
+fn checkout_mode(_git_mode: &str) -> Option<u32> {
+    None
+}
+
 fn snapshot_file_at(blob_root: &Path, root: &Path, relative: &str) -> Result<SnapshotKind, String> {
     let abs = root.join(relative);
     let meta = match std::fs::symlink_metadata(&abs) {
@@ -1501,7 +1853,7 @@ mod tests {
         let cwd = repo.0.to_string_lossy().into_owned();
         let (_root, store) = store();
 
-        store.ensure("s1", &cwd).unwrap();
+        store.ensure("s1", &cwd, false).unwrap();
 
         std::fs::write(repo.0.join("user.txt"), "agent-on-user\n").unwrap();
         std::fs::write(repo.0.join("clean.txt"), "agent-on-clean\n").unwrap();
@@ -1534,7 +1886,7 @@ mod tests {
         std::fs::write(repo.0.join("keep.txt"), "user\n").unwrap();
         let cwd = repo.0.to_string_lossy().into_owned();
         let (_root, store) = store();
-        store.ensure("s1", &cwd).unwrap();
+        store.ensure("s1", &cwd, false).unwrap();
 
         std::fs::write(repo.0.join("edit.txt"), "agent\n").unwrap();
         std::fs::write(repo.0.join("created.txt"), "new\n").unwrap();
@@ -1564,10 +1916,10 @@ mod tests {
         std::fs::write(repo.0.join("a.txt"), "user\n").unwrap();
         let cwd = repo.0.to_string_lossy().into_owned();
         let (_root, store) = store();
-        store.ensure("s1", &cwd).unwrap();
+        store.ensure("s1", &cwd, false).unwrap();
         std::fs::write(repo.0.join("a.txt"), "agent-1\n").unwrap();
         record(&store, "s1", &cwd, &["a.txt"]);
-        store.ensure("s1", &cwd).unwrap();
+        store.ensure("s1", &cwd, false).unwrap();
         std::fs::write(repo.0.join("b.txt"), "agent-2\n").unwrap();
         record(&store, "s1", &cwd, &["b.txt"]);
 
@@ -1587,7 +1939,7 @@ mod tests {
         }
         let cwd = repo.0.to_string_lossy().into_owned();
         let (_root, store) = store();
-        store.ensure("s1", &cwd).unwrap();
+        store.ensure("s1", &cwd, false).unwrap();
         std::fs::write(repo.0.join("a.txt"), "agent\n").unwrap();
         std::fs::write(repo.0.join("b.txt"), "new\n").unwrap();
         record(&store, "s1", &cwd, &["a.txt", "b.txt"]);
@@ -1613,7 +1965,7 @@ mod tests {
         }
         let cwd = repo.0.to_string_lossy().into_owned();
         let (_root, store) = store();
-        store.ensure("s1", &cwd).unwrap();
+        store.ensure("s1", &cwd, false).unwrap();
         std::fs::write(repo.0.join("a.txt"), "agent-a\n").unwrap();
         std::fs::write(repo.0.join("b.txt"), "agent-b\n").unwrap();
         record(&store, "s1", &cwd, &["a.txt", "b.txt"]);
@@ -1642,11 +1994,11 @@ mod tests {
         let cwd = repo.0.to_string_lossy().into_owned();
         let (_root, store) = store();
 
-        store.ensure("s1", &cwd).unwrap();
+        store.ensure("s1", &cwd, false).unwrap();
         std::fs::write(repo.0.join("plan.md"), "session-one\n").unwrap();
         record(&store, "s1", &cwd, &["plan.md"]);
 
-        store.ensure("s2", &cwd).unwrap();
+        store.ensure("s2", &cwd, false).unwrap();
         assert!(store.status("s2", &cwd).unwrap().files.is_empty());
     }
 
@@ -1659,7 +2011,7 @@ mod tests {
         let cwd = repo.0.to_string_lossy().into_owned();
         let (_root, store) = store();
 
-        store.ensure("s1", &cwd).unwrap();
+        store.ensure("s1", &cwd, false).unwrap();
         std::fs::write(repo.0.join("plan.md"), "session-one\n").unwrap();
         record(&store, "s1", &cwd, &["plan.md"]);
         assert_eq!(
@@ -1667,7 +2019,7 @@ mod tests {
             vec!["plan.md"]
         );
 
-        store.ensure("s2", &cwd).unwrap();
+        store.ensure("s2", &cwd, false).unwrap();
         std::fs::write(repo.0.join("readme.md"), "session-two\n").unwrap();
         record(&store, "s2", &cwd, &["readme.md"]);
 
@@ -1699,8 +2051,8 @@ mod tests {
         }
         let cwd = repo.0.to_string_lossy().into_owned();
         let (_root, store) = store();
-        store.ensure("writer", &cwd).unwrap();
-        store.ensure("reader", &cwd).unwrap();
+        store.ensure("writer", &cwd, false).unwrap();
+        store.ensure("reader", &cwd, false).unwrap();
 
         store.prepare("writer", &cwd, &["app.ts".into()]).unwrap();
         std::fs::write(repo.0.join("app.ts"), "writer\n").unwrap();
@@ -1722,7 +2074,7 @@ mod tests {
         std::fs::write(repo.0.join("app.ts"), "user-one\nuser-two\n").unwrap();
         let cwd = repo.0.to_string_lossy().into_owned();
         let (_root, store) = store();
-        store.ensure("s1", &cwd).unwrap();
+        store.ensure("s1", &cwd, false).unwrap();
         store.prepare("s1", &cwd, &["app.ts".into()]).unwrap();
         std::fs::write(repo.0.join("app.ts"), "user-one\nuser-two\nagent\n").unwrap();
         store.capture("s1", &cwd, &["app.ts".into()]).unwrap();
@@ -1755,8 +2107,8 @@ mod tests {
         }
         let cwd = repo.0.to_string_lossy().into_owned();
         let (_root, store) = store();
-        store.ensure("s1", &cwd).unwrap();
-        store.ensure("s2", &cwd).unwrap();
+        store.ensure("s1", &cwd, false).unwrap();
+        store.ensure("s2", &cwd, false).unwrap();
 
         store.prepare("s1", &cwd, &["app.ts".into()]).unwrap();
         std::fs::write(repo.0.join("app.ts"), "session-one\n").unwrap();
@@ -1806,7 +2158,7 @@ mod tests {
         }
         let cwd = repo.0.to_string_lossy().into_owned();
         let (_root, store) = store();
-        store.ensure("s1", &cwd).unwrap();
+        store.ensure("s1", &cwd, false).unwrap();
         store.prepare("s1", &cwd, &["app.ts".into()]).unwrap();
         std::fs::write(repo.0.join("app.ts"), "agent\n").unwrap();
         store.capture("s1", &cwd, &["app.ts".into()]).unwrap();
@@ -1826,7 +2178,7 @@ mod tests {
         let project = tmp("nongit");
         let cwd = project.0.to_string_lossy().into_owned();
         let (_root, store) = store();
-        store.ensure("s1", &cwd).unwrap();
+        store.ensure("s1", &cwd, false).unwrap();
         store
             .prepare(
                 "s1",
@@ -1858,7 +2210,7 @@ mod tests {
         }
         let cwd = repo.0.to_string_lossy().into_owned();
         let (_root, store) = store();
-        store.ensure("s1", &cwd).unwrap();
+        store.ensure("s1", &cwd, false).unwrap();
         std::fs::write(repo.0.join("a.txt"), "agent\n").unwrap();
         store.capture("s1", &cwd, &["a.txt".into()]).unwrap();
         assert!(store.status("s1", &cwd).unwrap().files.is_empty());
@@ -1870,7 +2222,7 @@ mod tests {
 
         // A later structured edit in that same session replaces the
         // untrusted completion-only claim with a real boundary.
-        store.ensure("s1", &cwd).unwrap();
+        store.ensure("s1", &cwd, false).unwrap();
         store.capture("s1", &cwd, &["a.txt".into()]).unwrap();
         store.prepare("s1", &cwd, &["a.txt".into()]).unwrap();
         std::fs::write(repo.0.join("a.txt"), "same-session-valid\n").unwrap();
@@ -1884,7 +2236,7 @@ mod tests {
 
         // An old/unprepared claim is not ownership and must not block a later
         // session that recorded a trustworthy before/after pair.
-        store.ensure("s2", &cwd).unwrap();
+        store.ensure("s2", &cwd, false).unwrap();
         store.prepare("s2", &cwd, &["a.txt".into()]).unwrap();
         std::fs::write(repo.0.join("a.txt"), "second-session\n").unwrap();
         store.capture("s2", &cwd, &["a.txt".into()]).unwrap();
@@ -1904,7 +2256,7 @@ mod tests {
         }
         let cwd = repo.0.to_string_lossy().into_owned();
         let (_root, store) = store();
-        store.ensure("s1", &cwd).unwrap();
+        store.ensure("s1", &cwd, false).unwrap();
 
         std::fs::write(repo.0.join("edit.txt"), "agent\n").unwrap();
         std::fs::write(repo.0.join("created.txt"), "new\n").unwrap();
@@ -1934,7 +2286,7 @@ mod tests {
         std::fs::write(repo.0.join("loose.txt"), "user\n").unwrap();
         let cwd = repo.0.to_string_lossy().into_owned();
         let (_root, store) = store();
-        store.ensure("s1", &cwd).unwrap();
+        store.ensure("s1", &cwd, false).unwrap();
 
         std::fs::remove_file(repo.0.join("loose.txt")).unwrap();
         record(&store, "s1", &cwd, &["loose.txt"]);
@@ -1952,7 +2304,7 @@ mod tests {
         }
         let cwd = repo.0.to_string_lossy().into_owned();
         let (_root, store) = store();
-        store.ensure("s1", &cwd).unwrap();
+        store.ensure("s1", &cwd, false).unwrap();
 
         std::fs::write(repo.0.join("a.txt"), "one\ntwo\nthree\nfour\n").unwrap();
         record(&store, "s1", &cwd, &["a.txt"]);
@@ -1975,7 +2327,7 @@ mod tests {
         std::fs::write(repo.0.join("b.txt"), "user\n").unwrap();
         let cwd = repo.0.to_string_lossy().into_owned();
         let (_root, store) = store();
-        store.ensure("s1", &cwd).unwrap();
+        store.ensure("s1", &cwd, false).unwrap();
 
         std::fs::write(repo.0.join("a.txt"), "a\nA\n").unwrap();
         record(&store, "s1", &cwd, &["a.txt"]);
@@ -2006,21 +2358,25 @@ mod tests {
         let to = target.0.to_string_lossy().into_owned();
         let (_root, store) = store();
 
-        store.ensure("worker", &from).unwrap();
+        store.ensure("worker", &from, true).unwrap();
         assert!(store.cleanup_safe("worker", &from).unwrap());
         store.prepare("worker", &from, &["a.txt".into()]).unwrap();
         std::fs::write(source.0.join("a.txt"), "worker result\n").unwrap();
         store.capture("worker", &from, &["a.txt".into()]).unwrap();
         assert!(!store.cleanup_safe("worker", &from).unwrap());
 
-        let applied = store.apply("worker", &from, &to).unwrap();
+        let applied = store
+            .apply("worker", &from, &to, &["a.txt".into()])
+            .unwrap();
         assert_eq!(applied.files, ["a.txt"]);
         assert_eq!(applied.already_applied, 0);
         assert_eq!(
             std::fs::read_to_string(target.0.join("a.txt")).unwrap(),
             "worker result\n"
         );
-        let retried = store.apply("worker", &from, &to).unwrap();
+        let retried = store
+            .apply("worker", &from, &to, &["a.txt".into()])
+            .unwrap();
         assert_eq!(retried.already_applied, 1);
     }
 
@@ -2040,7 +2396,7 @@ mod tests {
         let to = target.0.to_string_lossy().into_owned();
         let (_root, store) = store();
 
-        store.ensure("worker", &from).unwrap();
+        store.ensure("worker", &from, true).unwrap();
         store
             .prepare("worker", &from, &["smoke/marker.txt".into()])
             .unwrap();
@@ -2050,7 +2406,9 @@ mod tests {
             .capture("worker", &from, &["smoke/marker.txt".into()])
             .unwrap();
 
-        let applied = store.apply("worker", &from, &to).unwrap();
+        let applied = store
+            .apply("worker", &from, &to, &["smoke".into()])
+            .unwrap();
         assert_eq!(applied.files, ["smoke/marker.txt"]);
         assert_eq!(
             std::fs::read_to_string(target.0.join("smoke/marker.txt")).unwrap(),
@@ -2073,13 +2431,15 @@ mod tests {
         let from = source.0.to_string_lossy().into_owned();
         let to = target.0.to_string_lossy().into_owned();
         let (_root, store) = store();
-        store.ensure("worker", &from).unwrap();
+        store.ensure("worker", &from, true).unwrap();
         store.prepare("worker", &from, &["a.txt".into()]).unwrap();
         std::fs::write(source.0.join("a.txt"), "worker\n").unwrap();
         store.capture("worker", &from, &["a.txt".into()]).unwrap();
         std::fs::write(target.0.join("a.txt"), "lead changed\n").unwrap();
 
-        let conflict = store.apply("worker", &from, &to).unwrap_err();
+        let conflict = store
+            .apply("worker", &from, &to, &["a.txt".into()])
+            .unwrap_err();
         assert!(conflict.contains("lead checkout changed"));
         assert_eq!(
             std::fs::read_to_string(source.0.join("a.txt")).unwrap(),
@@ -2093,9 +2453,391 @@ mod tests {
         std::fs::write(source.0.join("unreported.txt"), "unknown\n").unwrap();
         assert!(!store.cleanup_safe("worker", &from).unwrap());
         assert!(store
-            .apply("worker", &from, &to)
+            .apply("worker", &from, &to, &["a.txt".into()])
             .unwrap_err()
             .contains("not captured"));
+    }
+
+    /// An isolated worker checkout and the lead checkout it integrates into,
+    /// both at one commit and holding exactly `files`.
+    fn worker_and_lead(label: &str, files: &[(&str, &str)]) -> Option<(Tmp, Tmp)> {
+        let worker = tmp(&format!("{label}-worker"));
+        let lead = tmp(&format!("{label}-lead"));
+        if !init_git_commit(&worker.0, files) {
+            return None;
+        }
+        let worker_path = worker.0.to_string_lossy().into_owned();
+        let lead_path = lead.0.to_string_lossy().into_owned();
+        if !git(&worker.0, &["clone", "-q", &worker_path, &lead_path]) {
+            return None;
+        }
+        // A system-wide autocrlf may have converted the clone's checkout.
+        let _ = git(&lead.0, &["config", "core.autocrlf", "false"]);
+        for (name, contents) in files {
+            std::fs::write(lead.0.join(name), contents).unwrap();
+        }
+        if !git(&lead.0, &["add", "-A"]) {
+            return None;
+        }
+        Some((worker, lead))
+    }
+
+    fn cwd_of(dir: &Tmp) -> String {
+        dir.0.to_string_lossy().into_owned()
+    }
+
+    fn bytes(dir: &Tmp, relative: &str) -> Vec<u8> {
+        std::fs::read(dir.0.join(relative)).unwrap()
+    }
+
+    fn git_out(dir: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?} failed");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    fn paths(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    /// Both checkouts use `core.autocrlf=true`. The worker's fresh checkout
+    /// converted `relative` to CRLF; the lead's older checkout kept LF. Git
+    /// considers both clean.
+    fn diverge_line_endings(worker: &Tmp, lead: &Tmp, relative: &str) {
+        for dir in [worker, lead] {
+            assert!(git(&dir.0, &["config", "core.autocrlf", "true"]));
+        }
+        std::fs::remove_file(worker.0.join(relative)).unwrap();
+        assert!(git(&worker.0, &["checkout", "--", relative]));
+        let lf = bytes(lead, relative);
+        assert!(!lf.contains(&b'\r'));
+        let crlf = String::from_utf8(lf).unwrap().replace('\n', "\r\n");
+        assert_eq!(bytes(worker, relative), crlf.into_bytes());
+        assert_eq!(git_out(&worker.0, &["status", "--porcelain"]), "");
+        assert_eq!(git_out(&lead.0, &["status", "--porcelain"]), "");
+    }
+
+    #[test]
+    fn turn_end_capture_integrates_shell_edits_after_the_last_tool_edit() {
+        let Some((worker, lead)) = worker_and_lead("shell-after", &[("README.md", "head\n")])
+        else {
+            return;
+        };
+        let (from, to) = (cwd_of(&worker), cwd_of(&lead));
+        let scope = paths(&["context/audit.md"]);
+        let (_root, store) = store();
+        store.ensure("worker", &from, true).unwrap();
+        store.prepare("worker", &from, &scope).unwrap();
+        std::fs::create_dir_all(worker.0.join("context")).unwrap();
+        std::fs::write(worker.0.join("context/audit.md"), "draft\n").unwrap();
+        store.capture("worker", &from, &scope).unwrap();
+        // Codex finishes the report through shell commands, which report no
+        // tool event. The result has mixed line endings.
+        std::fs::write(worker.0.join("context/audit.md"), "final\r\nmixed\n").unwrap();
+
+        store.reconcile("worker", &from, &scope).unwrap();
+        let applied = store.apply("worker", &from, &to, &scope).unwrap();
+        assert_eq!(applied.files, ["context/audit.md"]);
+        assert_eq!(bytes(&lead, "context/audit.md"), b"final\r\nmixed\n");
+    }
+
+    #[test]
+    fn turn_end_capture_integrates_files_changed_only_through_the_shell() {
+        let Some((worker, lead)) = worker_and_lead(
+            "shell-only",
+            &[("README.md", "head\n"), ("docs/old.md", "old\n")],
+        ) else {
+            return;
+        };
+        let (from, to) = (cwd_of(&worker), cwd_of(&lead));
+        let scope = paths(&["README.md", "docs"]);
+        let (_root, store) = store();
+        store.ensure("worker", &from, true).unwrap();
+        std::fs::write(worker.0.join("README.md"), "edited\n").unwrap();
+        std::fs::write(worker.0.join("docs/new.md"), "new\n").unwrap();
+        std::fs::remove_file(worker.0.join("docs/old.md")).unwrap();
+
+        store.reconcile("worker", &from, &scope).unwrap();
+        let applied = store.apply("worker", &from, &to, &scope).unwrap();
+        assert_eq!(applied.files, ["README.md", "docs/new.md", "docs/old.md"]);
+        assert_eq!(bytes(&lead, "README.md"), b"edited\n");
+        assert_eq!(bytes(&lead, "docs/new.md"), b"new\n");
+        assert!(!lead.0.join("docs/old.md").exists());
+        // The worker's review shows the whole turn, not just tool edits.
+        let status = store.status("worker", &from).unwrap();
+        assert_eq!(
+            relatives(&status),
+            vec!["README.md", "docs/new.md", "docs/old.md"]
+        );
+        assert!(status.files.iter().all(|file| file.exact));
+    }
+
+    #[test]
+    fn isolated_baseline_survives_a_shell_edit_before_the_first_tool_edit() {
+        let Some((worker, lead)) =
+            worker_and_lead("baseline", &[("a.txt", "head\n"), ("b.txt", "head\n")])
+        else {
+            return;
+        };
+        // Uncommitted lead work is seeded into the worker checkout.
+        std::fs::write(lead.0.join("a.txt"), "lead draft\n").unwrap();
+        std::fs::write(worker.0.join("a.txt"), "lead draft\n").unwrap();
+        let (from, to) = (cwd_of(&worker), cwd_of(&lead));
+        let scope = paths(&["a.txt", "b.txt"]);
+        let (_root, store) = store();
+        store.ensure("worker", &from, true).unwrap();
+        // The worker edits both files through the shell before its first
+        // structured edit, so a tool-start snapshot is not the baseline.
+        std::fs::write(worker.0.join("a.txt"), "lead draft\nshell\n").unwrap();
+        std::fs::write(worker.0.join("b.txt"), "shell\n").unwrap();
+        store.prepare("worker", &from, &scope).unwrap();
+        std::fs::write(worker.0.join("a.txt"), "lead draft\nshell\ntool\n").unwrap();
+        std::fs::write(worker.0.join("b.txt"), "shell\ntool\n").unwrap();
+        store.capture("worker", &from, &scope).unwrap();
+
+        store.reconcile("worker", &from, &scope).unwrap();
+        let applied = store.apply("worker", &from, &to, &scope).unwrap();
+        assert_eq!(applied.files, ["a.txt", "b.txt"]);
+        assert_eq!(bytes(&lead, "a.txt"), b"lead draft\nshell\ntool\n");
+        assert_eq!(bytes(&lead, "b.txt"), b"shell\ntool\n");
+    }
+
+    #[test]
+    fn tool_edit_after_a_shell_edit_does_not_strand_an_isolated_worker() {
+        let Some((worker, lead)) = worker_and_lead("no-diverge", &[("README.md", "head\n")]) else {
+            return;
+        };
+        let (from, to) = (cwd_of(&worker), cwd_of(&lead));
+        let scope = paths(&["report.md"]);
+        let (_root, store) = store();
+        store.ensure("worker", &from, true).unwrap();
+        store.prepare("worker", &from, &scope).unwrap();
+        std::fs::write(worker.0.join("report.md"), "v1\n").unwrap();
+        store.capture("worker", &from, &scope).unwrap();
+        std::fs::write(worker.0.join("report.md"), "v2 through the shell\n").unwrap();
+        // A later apply_patch on the same file.
+        store.prepare("worker", &from, &scope).unwrap();
+        std::fs::write(worker.0.join("report.md"), "v3\n").unwrap();
+        store.capture("worker", &from, &scope).unwrap();
+
+        store.reconcile("worker", &from, &scope).unwrap();
+        assert!(store.status("worker", &from).unwrap().files[0].exact);
+        let applied = store.apply("worker", &from, &to, &scope).unwrap();
+        assert_eq!(applied.files, ["report.md"]);
+        assert_eq!(bytes(&lead, "report.md"), b"v3\n");
+    }
+
+    #[test]
+    fn turn_end_capture_clears_divergence_left_by_an_older_worker_checkpoint() {
+        let Some((worker, lead)) = worker_and_lead("legacy-diverge", &[("README.md", "head\n")])
+        else {
+            return;
+        };
+        let (from, to) = (cwd_of(&worker), cwd_of(&lead));
+        let scope = paths(&["report.md"]);
+        let (_root, store) = store();
+        // Checkpoints written before isolated checkouts were marked.
+        store.ensure("worker", &from, false).unwrap();
+        store.prepare("worker", &from, &scope).unwrap();
+        std::fs::write(worker.0.join("report.md"), "v1\n").unwrap();
+        store.capture("worker", &from, &scope).unwrap();
+        std::fs::write(worker.0.join("report.md"), "v2 through the shell\n").unwrap();
+        store.prepare("worker", &from, &scope).unwrap();
+        std::fs::write(worker.0.join("report.md"), "v3\n").unwrap();
+        store.capture("worker", &from, &scope).unwrap();
+        assert!(store
+            .apply("worker", &from, &to, &scope)
+            .unwrap_err()
+            .contains("changed outside the worker"));
+
+        // The next turn end re-captures the whole checkout.
+        store.reconcile("worker", &from, &scope).unwrap();
+        let applied = store.apply("worker", &from, &to, &scope).unwrap();
+        assert_eq!(applied.files, ["report.md"]);
+        assert_eq!(bytes(&lead, "report.md"), b"v3\n");
+    }
+
+    #[test]
+    fn turn_end_capture_never_claims_writes_outside_the_task_scope() {
+        let Some((worker, lead)) =
+            worker_and_lead("scope", &[("docs/a.md", "a\n"), ("src/b.ts", "b\n")])
+        else {
+            return;
+        };
+        let (from, to) = (cwd_of(&worker), cwd_of(&lead));
+        let scope = paths(&["docs"]);
+        let (_root, store) = store();
+        store.ensure("worker", &from, true).unwrap();
+        std::fs::write(worker.0.join("docs/a.md"), "a2\n").unwrap();
+        std::fs::write(worker.0.join("src/b.ts"), "stray\n").unwrap();
+        std::fs::write(worker.0.join("src/new.ts"), "stray\n").unwrap();
+        std::fs::write(worker.0.join("docsx.md"), "stray\n").unwrap();
+
+        store.reconcile("worker", &from, &scope).unwrap();
+        assert!(store
+            .apply("worker", &from, &to, &scope)
+            .unwrap_err()
+            .contains("not captured"));
+        assert_eq!(bytes(&lead, "docs/a.md"), b"a\n");
+        assert!(!lead.0.join("src/new.ts").exists());
+
+        // Once the worker reverts its stray writes, its in-scope work integrates.
+        std::fs::write(worker.0.join("src/b.ts"), "b\n").unwrap();
+        std::fs::remove_file(worker.0.join("src/new.ts")).unwrap();
+        std::fs::remove_file(worker.0.join("docsx.md")).unwrap();
+        store.reconcile("worker", &from, &scope).unwrap();
+        let applied = store.apply("worker", &from, &to, &scope).unwrap();
+        assert_eq!(applied.files, ["docs/a.md"]);
+        assert_eq!(bytes(&lead, "src/b.ts"), b"b\n");
+    }
+
+    #[test]
+    fn integration_rejects_a_captured_change_outside_the_task_scope() {
+        let Some((worker, lead)) =
+            worker_and_lead("apply-scope", &[("docs/a.md", "a\n"), ("src/b.ts", "b\n")])
+        else {
+            return;
+        };
+        let (from, to) = (cwd_of(&worker), cwd_of(&lead));
+        let (_root, store) = store();
+        store.ensure("worker", &from, true).unwrap();
+        store
+            .prepare("worker", &from, &paths(&["src/b.ts"]))
+            .unwrap();
+        std::fs::write(worker.0.join("src/b.ts"), "stray\n").unwrap();
+        store
+            .capture("worker", &from, &paths(&["src/b.ts"]))
+            .unwrap();
+
+        let error = store
+            .apply("worker", &from, &to, &paths(&["docs"]))
+            .unwrap_err();
+        assert!(error.contains("outside this task's write scope"), "{error}");
+        assert_eq!(bytes(&lead, "src/b.ts"), b"b\n");
+    }
+
+    #[test]
+    fn integration_ignores_line_ending_only_differences_in_the_lead_checkout() {
+        let Some((worker, lead)) = worker_and_lead("eol", &[("app.ts", "one\ntwo\n")]) else {
+            return;
+        };
+        diverge_line_endings(&worker, &lead, "app.ts");
+        let (from, to) = (cwd_of(&worker), cwd_of(&lead));
+        let scope = paths(&["app.ts"]);
+        let (_root, store) = store();
+        store.ensure("worker", &from, true).unwrap();
+        store.prepare("worker", &from, &scope).unwrap();
+        std::fs::write(worker.0.join("app.ts"), "one\r\ntwo\r\nthree\r\n").unwrap();
+        store.capture("worker", &from, &scope).unwrap();
+
+        let applied = store.apply("worker", &from, &to, &scope).unwrap();
+        assert_eq!(applied.files, ["app.ts"]);
+        // The lead keeps its own line endings, so only the real edit shows.
+        assert_eq!(bytes(&lead, "app.ts"), b"one\ntwo\nthree\n");
+        assert_eq!(
+            git_out(&lead.0, &["diff", "--numstat"]).trim(),
+            "1\t0\tapp.ts"
+        );
+        let retried = store.apply("worker", &from, &to, &scope).unwrap();
+        assert_eq!(retried.already_applied, 1);
+        assert_eq!(bytes(&lead, "app.ts"), b"one\ntwo\nthree\n");
+    }
+
+    #[test]
+    fn integration_refuses_a_real_lead_change_behind_different_line_endings() {
+        let Some((worker, lead)) = worker_and_lead("eol-conflict", &[("app.ts", "one\ntwo\n")])
+        else {
+            return;
+        };
+        diverge_line_endings(&worker, &lead, "app.ts");
+        let (from, to) = (cwd_of(&worker), cwd_of(&lead));
+        let scope = paths(&["app.ts"]);
+        let (_root, store) = store();
+        store.ensure("worker", &from, true).unwrap();
+        store.prepare("worker", &from, &scope).unwrap();
+        std::fs::write(worker.0.join("app.ts"), "one\r\ntwo\r\nthree\r\n").unwrap();
+        store.capture("worker", &from, &scope).unwrap();
+        std::fs::write(lead.0.join("app.ts"), "one\nTWO\n").unwrap();
+
+        assert!(store
+            .apply("worker", &from, &to, &scope)
+            .unwrap_err()
+            .contains("lead checkout changed"));
+        assert_eq!(bytes(&lead, "app.ts"), b"one\nTWO\n");
+    }
+
+    #[test]
+    fn turn_end_capture_baselines_shell_edits_against_the_filtered_checkout() {
+        let Some((worker, lead)) = worker_and_lead("eol-shell", &[("app.ts", "one\ntwo\n")]) else {
+            return;
+        };
+        diverge_line_endings(&worker, &lead, "app.ts");
+        let (from, to) = (cwd_of(&worker), cwd_of(&lead));
+        let scope = paths(&["app.ts"]);
+        let (_root, store) = store();
+        store.ensure("worker", &from, true).unwrap();
+        // Only a shell command edits the tracked file.
+        std::fs::write(worker.0.join("app.ts"), "one\r\ntwo\r\nthree\r\n").unwrap();
+
+        store.reconcile("worker", &from, &scope).unwrap();
+        let diff = store.file_diff("worker", &from, "app.ts").unwrap();
+        assert_eq!(diff.original, "one\r\ntwo\r\n");
+        let applied = store.apply("worker", &from, &to, &scope).unwrap();
+        assert_eq!(applied.files, ["app.ts"]);
+        assert_eq!(bytes(&lead, "app.ts"), b"one\ntwo\nthree\n");
+    }
+
+    #[test]
+    fn worker_results_follow_the_lead_only_across_a_pure_line_ending_difference() {
+        let state = |bytes: &[u8]| (FileState::Contents(bytes.to_vec()), None);
+        let convert = |before: &[u8], target: &[u8], after: &[u8]| match in_lead_line_endings(
+            &state(before),
+            &state(target),
+            state(after),
+        )
+        .0
+        {
+            FileState::Contents(bytes) => bytes,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            convert(b"a\r\nb\r\n", b"a\nb\n", b"a\r\nb\r\nc\n"),
+            b"a\nb\nc\n"
+        );
+        assert_eq!(
+            convert(b"a\nb\n", b"a\r\nb\r\n", b"a\nb\nc\r\n"),
+            b"a\r\nb\r\nc\r\n"
+        );
+        // Same bytes on both sides: the worker's own line endings stand.
+        assert_eq!(convert(b"a\nb\n", b"a\nb\n", b"a\r\nb\r\n"), b"a\r\nb\r\n");
+        assert_eq!(
+            convert(b"a\r\n\0", b"a\n\0", b"a\r\nb\r\n\0"),
+            b"a\r\nb\r\n\0"
+        );
+        assert_eq!(convert(b"a\r\nb\r\n", b"x\ny\n", b"c\r\n"), b"c\r\n");
+    }
+
+    #[test]
+    fn write_scopes_match_at_path_boundaries() {
+        let root = Path::new("/repo");
+        let scopes = write_scopes(root, &paths(&["./src/", "docs\\guide.md"])).unwrap();
+        assert!(in_write_scope(&scopes, "src/a.ts"));
+        assert!(in_write_scope(&scopes, "src"));
+        assert!(in_write_scope(&scopes, "docs/guide.md"));
+        assert!(!in_write_scope(&scopes, "srcx/a.ts"));
+        assert!(!in_write_scope(&scopes, "docs/guide.md.bak"));
+        assert!(!in_write_scope(&scopes, "README.md"));
+        let everything = write_scopes(root, &paths(&["."])).unwrap();
+        assert!(in_write_scope(&everything, "any/file.txt"));
+        assert!(write_scopes(root, &paths(&["../escape"])).is_err());
+        assert!(!in_write_scope(
+            &write_scopes(root, &[]).unwrap(),
+            "src/a.ts"
+        ));
     }
 
     #[test]

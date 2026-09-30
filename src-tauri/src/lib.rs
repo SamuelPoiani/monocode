@@ -475,6 +475,7 @@ pub fn run() {
             checkpoint::session_checkpoint_prepare,
             checkpoint::session_checkpoint_capture,
             checkpoint::session_checkpoint_status,
+            checkpoint::session_checkpoint_reconcile,
             checkpoint::session_checkpoint_apply,
             checkpoint::session_checkpoint_cleanup_safe,
             checkpoint::session_checkpoint_forget,

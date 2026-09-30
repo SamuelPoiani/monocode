@@ -74,12 +74,17 @@ export function subscribeReviewChanged(
   return () => window.removeEventListener(REVIEW_CHANGED, handler);
 }
 
+/**
+ * `isolated` marks a checkout only this session writes, such as an
+ * orchestration worker's worktree; its first snapshot stays the baseline.
+ */
 export function ensureSessionCheckpoint(
   sessionId: string,
   cwd: string,
+  isolated = false,
 ): Promise<void> {
   return enqueueCheckpoint(sessionId, () =>
-    invoke<void>("session_checkpoint_ensure", { sessionId, cwd }),
+    invoke<void>("session_checkpoint_ensure", { sessionId, cwd, isolated }),
   );
 }
 
@@ -87,9 +92,10 @@ export function ensureSessionCheckpoint(
 export async function beginSessionTurn(
   sessionId: string,
   cwd: string,
+  isolated = false,
 ): Promise<void> {
   if (!cwd || cwd === "~") return;
-  await ensureSessionCheckpoint(sessionId, cwd);
+  await ensureSessionCheckpoint(sessionId, cwd, isolated);
   notifyReviewChanged(sessionId);
 }
 
@@ -136,17 +142,37 @@ export function sessionCheckpointStatus(
   );
 }
 
-/** Apply one isolated worker's captured delta to its lead checkout. */
+/**
+ * Record an isolated worker's whole turn, including edits made through shell
+ * commands, for its write scopes (relative to `cwd`). Only for a checkout no
+ * other session writes.
+ */
+export function reconcileSessionCheckpoint(
+  sessionId: string,
+  cwd: string,
+  scopes: string[],
+): Promise<void> {
+  return enqueueCheckpoint(sessionId, () =>
+    invoke<void>("session_checkpoint_reconcile", { sessionId, cwd, scopes }),
+  );
+}
+
+/**
+ * Apply one isolated worker's captured delta to its lead checkout. Any change
+ * outside `scopes` (relative to `fromCwd`) is rejected.
+ */
 export function applySessionCheckpoint(
   sessionId: string,
   fromCwd: string,
   toCwd: string,
+  scopes: string[],
 ): Promise<CheckpointApplyResult> {
   return enqueueCheckpoint(sessionId, () =>
     invoke<CheckpointApplyResult>("session_checkpoint_apply", {
       sessionId,
       fromCwd,
       toCwd,
+      scopes,
     }),
   );
 }

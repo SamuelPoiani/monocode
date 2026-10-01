@@ -173,6 +173,19 @@ describe("settings pages", () => {
       "width: 77%;",
     );
     expect(bar?.parentElement?.textContent).toContain("77% left");
+
+    const used = container.querySelector<HTMLButtonElement>(
+      '[role="radiogroup"][aria-label="Usage meters"] [role="radio"]:last-child',
+    )!;
+    await act(async () => used.click());
+
+    expect(localStorage.getItem("monocode.usageMeterMode")).toBe("used");
+    const usedBar = container.querySelector('[aria-label="5h limit used"]');
+    expect(usedBar?.getAttribute("aria-valuenow")).toBe("23");
+    expect(usedBar?.querySelector("span")?.getAttribute("style")).toBe(
+      "width: 23%;",
+    );
+    expect(usedBar?.parentElement?.textContent).toContain("23%");
   });
 
   it("shows background effect choices above scope when artwork is available", async () => {

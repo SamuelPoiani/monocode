@@ -1,3 +1,12 @@
+import { useSyncExternalStore } from "react";
+import {
+  loadUsageChipWindow,
+  loadUsageMeterMode,
+  subscribeUsageChipWindow,
+  subscribeUsageMeterMode,
+  type UsageChipWindow,
+  type UsageMeterMode,
+} from "../../settings/model/settings";
 import {
   clampUsedPercent,
   formatResetDuration,
@@ -142,8 +151,10 @@ export function UsageMeter({
   now: number;
   className?: string;
 }) {
+  const mode = useUsageMeterMode();
   const pct = clampUsedPercent(window.usedPercent);
   const remaining = 100 - pct;
+  const shown = mode === "remaining" ? remaining : pct;
   const full = pct >= 100 && (window.resetsAt == null || window.resetsAt > now);
   const reset =
     window.resetsAt == null
@@ -167,20 +178,24 @@ export function UsageMeter({
         <span
           className={`shrink-0 tabular-nums ${full ? "font-medium text-red-400" : "text-content/60"}`}
         >
-          {formatUsagePercent(remaining)} left
+          {mode === "remaining"
+            ? `${formatUsagePercent(remaining)} left`
+            : full
+              ? "Full"
+              : formatUsagePercent(pct)}
         </span>
       </div>
       <div
         className="mt-1.5 h-1 overflow-hidden rounded-full bg-content/10"
         role="progressbar"
-        aria-label={`${title} limit remaining`}
+        aria-label={`${title} limit ${mode}`}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-valuenow={Math.round(remaining)}
+        aria-valuenow={Math.round(shown)}
       >
         <span
           className={`block h-full rounded-full transition-[width] duration-300 ${barClass(pct)}`}
-          style={{ width: `${remaining}%` }}
+          style={{ width: `${shown}%` }}
         />
       </div>
     </div>
@@ -193,6 +208,24 @@ function MeterSkeleton() {
       <div className="h-3 w-20 rounded bg-content/10" />
       <div className="mt-1.5 h-1 rounded-full bg-content/10" />
     </div>
+  );
+}
+
+/** Live usage meter mode; shared with the footer usage chip. */
+export function useUsageMeterMode(): UsageMeterMode {
+  return useSyncExternalStore(
+    subscribeUsageMeterMode,
+    loadUsageMeterMode,
+    loadUsageMeterMode,
+  );
+}
+
+/** Live footer usage chip window choice. */
+export function useUsageChipWindow(): UsageChipWindow {
+  return useSyncExternalStore(
+    subscribeUsageChipWindow,
+    loadUsageChipWindow,
+    loadUsageChipWindow,
   );
 }
 

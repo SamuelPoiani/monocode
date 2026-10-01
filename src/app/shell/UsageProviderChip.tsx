@@ -44,6 +44,8 @@ import {
   barClass,
   meterWindows,
   UsageMeter,
+  useUsageChipWindow,
+  useUsageMeterMode,
 } from "../../features/providers/ui/ProviderAccountUsage";
 import {
   identityKey,
@@ -110,7 +112,11 @@ export function UsageProviderChip({
     windows.length === 0 &&
     (needsProviderLogin(limits) || reconnectState !== "idle"),
   );
-  const tightest = windows.reduce<RateLimitWindow | null>((best, entry) => {
+  const chipWindow = useUsageChipWindow();
+  // Providers without the chosen window (e.g. monthly-only) keep showing all.
+  const chosen = windows.filter((entry) => entry.key === chipWindow);
+  const chipWindows = chosen.length > 0 ? chosen : windows;
+  const tightest = chipWindows.reduce<RateLimitWindow | null>((best, entry) => {
     if (!best || entry.window.usedPercent > best.usedPercent) {
       return entry.window;
     }
@@ -251,7 +257,7 @@ export function UsageProviderChip({
             ) : null}
             {tightest ? <MiniBar usedPct={tightest.usedPercent} /> : null}
             <span className="flex min-w-0 items-center gap-1 tabular-nums">
-              {windows.map((entry, index) => (
+              {chipWindows.map((entry, index) => (
                 <span
                   key={entry.key}
                   className="inline-flex items-center gap-1"
@@ -759,8 +765,10 @@ function UsageWindowCard({
   window: RateLimitWindow;
   now: number;
 }) {
+  const mode = useUsageMeterMode();
   const pct = clampUsedPercent(window.usedPercent);
   const remaining = 100 - pct;
+  const shown = mode === "remaining" ? remaining : pct;
   const title =
     kind === "session"
       ? "5-hour limit"
@@ -780,14 +788,14 @@ function UsageWindowCard({
       <div
         className="mt-2 h-1.5 overflow-hidden rounded-full bg-content/10"
         role="progressbar"
-        aria-label={`${title} remaining`}
+        aria-label={`${title} ${mode}`}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-valuenow={Math.round(remaining)}
+        aria-valuenow={Math.round(shown)}
       >
         <span
           className={`block h-full rounded-full ${barClass(pct)}`}
-          style={{ width: `${remaining}%` }}
+          style={{ width: `${shown}%` }}
         />
       </div>
       <div className="mt-1.5 flex items-center justify-between gap-3 text-[10px] leading-4 text-content/40">
@@ -1146,6 +1154,7 @@ function emptyUsageLabel(limits: ProviderRateLimits): string {
 }
 
 function MiniBar({ usedPct }: { usedPct: number }) {
+  const mode = useUsageMeterMode();
   const pct = clampUsedPercent(usedPct);
   return (
     <span
@@ -1154,7 +1163,7 @@ function MiniBar({ usedPct }: { usedPct: number }) {
     >
       <span
         className={`block h-full rounded-full ${barClass(pct)}`}
-        style={{ width: `${100 - pct}%` }}
+        style={{ width: `${mode === "remaining" ? 100 - pct : pct}%` }}
       />
     </span>
   );

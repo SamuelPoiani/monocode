@@ -1621,20 +1621,23 @@ function SidebarComponent({
         <>
           {titleBarAbove ? null : (
             <div
-              className="flex h-10 shrink-0 select-none items-center border-b border-stroke pr-1.5"
+              className="flex h-10 shrink-0 select-none items-center border-b border-stroke px-1.5"
               data-tauri-drag-region="deep"
             >
-              {IS_MAC ? <div className="w-[78px] shrink-0" /> : null}
-              <DevModeSlot />
+              {IS_MAC ? <div className="w-[72px] shrink-0" /> : null}
               <TabVisitNav
                 canGoBack={canGoBack}
                 canGoForward={canGoForward}
                 onGoBack={onGoBack}
                 onGoForward={onGoForward}
-                onTogglePanel={
-                  compactProjectRail ? undefined : onToggleProjectRail
-                }
               />
+              <DevModeSlot />
+              <WorkspaceTitleActions onSearch={onGoToFile} onNew={onNew} />
+              {!compactProjectRail && onToggleProjectRail ? (
+                <IconButton label="Toggle Projects" onClick={onToggleProjectRail}>
+                  <PanelLeft className="size-3.5" strokeWidth={1.75} />
+                </IconButton>
+              ) : null}
             </div>
           )}
           {onSelectProject && !compactRailVisible ? (

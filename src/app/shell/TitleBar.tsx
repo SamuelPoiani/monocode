@@ -848,11 +848,15 @@ function TitleBarComponent({
   // Changes. Without a project that sidebar is gone, so the picker stays here.
   const showProjectButton =
     railClosed && Boolean(onSelectProject) && !showCurrentProject;
+  // With the rail closed, the sidebar header carries Go to File and New
+  // session. They only land here when that header is gone.
+  const showProjectActions =
+    railClosed && !projectless && (!sessionSidebarOpen || compactRail);
   const showTrailingActions =
     (projectless &&
       railClosed &&
       Boolean(onOpenInbox || onOpenNotes || onOpenSettings)) ||
-    (railClosed && !projectless);
+    showProjectActions;
   const trailingControls =
     showTrailingActions || !IS_MAC ? (
       <div className="flex h-full shrink-0 items-stretch">
@@ -868,7 +872,7 @@ function TitleBarComponent({
                 <StickyNote className="size-3.5" strokeWidth={1.75} />
               </IconButton>
             ) : null}
-            {railClosed && !projectless ? (
+            {showProjectActions ? (
               <>
                 <IconButton label={`Go to File (${MOD}P)`} onClick={onGoToFile}>
                   <Search className="size-3.5" strokeWidth={1.75} />

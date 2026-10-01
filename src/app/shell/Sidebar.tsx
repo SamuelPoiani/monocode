@@ -276,7 +276,7 @@ type Props = {
   onGoBack?: () => void;
   onGoForward?: () => void;
   onOpenDiff?: (path: string, kind?: GitFileDiffKind, pin?: boolean) => void;
-  onOpenAllChanges?: () => void;
+  onOpenAllChanges?: (kind: GitFileDiffKind) => void;
   onOpenCommit?: (commit: GitHistoryCommit, pin?: boolean) => void;
   selectedDiffPath?: string;
   selectedDiffKind?: GitFileDiffKind;

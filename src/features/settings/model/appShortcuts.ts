@@ -1,6 +1,7 @@
 import {
   keybindingPressed,
   matchCustomKeybinding,
+  validateKeybindingShortcut,
   type ShortcutEvent,
 } from "./settings";
 
@@ -45,4 +46,23 @@ export function resolveAppShortcut(event: AppShortcutEvent): string | null {
     return keybindingPressed(command, event, true) ? command : null;
   }
   return null;
+}
+
+/** Reserve app defaults on both primary modifiers, plus all configured bindings. */
+export function validateActionShortcut(shortcut: string): string {
+  const canonical = validateKeybindingShortcut("Project action", shortcut);
+  const parts = canonical.split("+");
+  const code = parts.pop();
+  if (
+    !parts.includes("Option") &&
+    (parts.includes("Command") || parts.includes("Control"))
+  ) {
+    const owner = APP_SHORTCUTS.find(
+      ([, key, shift]) =>
+        code === (key === "," ? "Comma" : `Key${key.toUpperCase()}`) &&
+        parts.includes("Shift") === shift,
+    );
+    if (owner) throw new Error(`Already used by ${owner[0]}`);
+  }
+  return canonical;
 }

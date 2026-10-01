@@ -75,6 +75,10 @@ export type FilePaneTab = {
   /** Read-only transcript of an orchestration worker. Live only — not persisted. */
   agent?: AgentTabSource;
   terminal?: boolean;
+  /** One-shot command for a newly opened terminal. Never persisted or transferred. */
+  initialCommand?: string;
+  /** Explicit action title, retained while shell metadata changes. */
+  terminalTitle?: string;
   /** Foreground command when it isn't the shell. Live only — not persisted. */
   foreground?: string;
   /** Temporary tab: the next preview open in its pane replaces it. */
@@ -311,6 +315,7 @@ export function newTerminalFile(
   cwd: string,
   title?: string,
   projectCwd?: string,
+  initialCommand?: string,
 ): FilePaneTab {
   return {
     id: crypto.randomUUID(),
@@ -318,6 +323,7 @@ export function newTerminalFile(
     cwd,
     ...(projectCwd && projectCwd !== cwd ? { projectCwd } : {}),
     terminal: true,
+    ...(initialCommand ? { initialCommand, terminalTitle: title } : {}),
   };
 }
 

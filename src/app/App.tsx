@@ -127,6 +127,9 @@ import {
   zoomOutUiScale,
 } from "../features/settings/model/uiScale";
 import { resolveZoomKeybinding } from "../features/settings/model/zoomKeybinding";
+import { setLastRunProjectAction, type ProjectAction } from "../features/projects/model/projectActions";
+import { resolveProjectActionShortcut } from "../features/projects/model/projectActionShortcuts";
+import { runWorktreeActions, subscribeWorktreeActions } from "../features/projects/model/worktreeActions";
 import { resolveAppShortcut } from "../features/settings/model/appShortcuts";
 import { runUpdateFlow } from "./model/updater";
 import {
@@ -2544,13 +2547,20 @@ function Workspace({
   }, []);
 
   const openProjectTerminal = useCallback(
-    (cwd: string) => {
-      const workdir = cwd || projectCwdRef.current;
-      const projectPath = projectCwdRef.current;
-      if (!isLocalProject(projectPath)) return false;
+    (
+      cwd: string,
+      action?: ProjectAction,
+      projectPath = projectCwdRef.current,
+      focus = true,
+    ) => {
+      const workdir = cwd || projectPath;
+      if (!isLocalProject(projectPath) || !isLocalProject(workdir)) return false;
+      const actionFile = action
+        ? newTerminalFile(workdir, action.name, projectPath, action.command)
+        : undefined;
       setProjectTerminals((prev) => {
         const existing = findProjectTerminal(prev, projectPath);
-        const file = newTerminalFile(
+        const file = actionFile ?? newTerminalFile(
           workdir,
           existing ? nextDockTerminalTitle(existing, workdir) : undefined,
           projectPath,
@@ -2569,10 +2579,38 @@ function Workspace({
           addTerminalToDock(dock, file),
         );
       });
-      focusProjectTerminal();
+      if (focus) focusProjectTerminal();
       return true;
     },
     [focusProjectTerminal],
+  );
+
+  const onRunProjectAction = useCallback(
+    (action: ProjectAction) => {
+      const project = projectCwdRef.current;
+      const cwd = active?.worktreeCwd ?? gitCwd;
+      if (openProjectTerminal(cwd, action, project)) {
+        setLastRunProjectAction(project, action.id);
+      }
+    },
+    [active?.worktreeCwd, gitCwd, openProjectTerminal],
+  );
+
+  useEffect(
+    () => subscribeWorktreeActions(async ({ project, cwd }) => {
+      await runWorktreeActions(project, cwd, {
+        openTerminal: (action, workdir, owner) => {
+          if (openProjectTerminal(workdir, action, owner, false)) {
+            setLastRunProjectAction(owner, action.id);
+          }
+        },
+        onError: (detail) => {
+          void message(detail, { title: "Project action failed", kind: "error" })
+            .catch(console.error);
+        },
+      });
+    }),
+    [openProjectTerminal],
   );
 
   const onOpenTerminal = useCallback(
@@ -9318,7 +9356,7 @@ function Workspace({
             },
             worktrees: (cwd) => listWorktrees(cwd),
             createWorktree: (cwd, branch, base, existing) =>
-              createWorktree(cwd, branch, base, existing),
+              createWorktree(cwd, branch, base, existing, source.cwd),
             notes: () => invoke("notes_list"),
             note: (id) => invoke("notes_get", { id }),
             saveNote: async (note) => {
@@ -10177,6 +10215,7 @@ function Workspace({
     onNavigateProjectList,
     openSettings,
     onOpenApprovalSession,
+    onRunProjectAction,
   });
   actions.current = {
     onNew,
@@ -10208,6 +10247,7 @@ function Workspace({
     onNavigateProjectList,
     openSettings,
     onOpenApprovalSession,
+    onRunProjectAction,
   };
 
   const debounce = useRef({ name: "", at: 0 });
@@ -10416,6 +10456,14 @@ function Workspace({
         else if (shortcut === "App: Find in Files")
           run("find_in_project", a.onFindInProject);
         return;
+      }
+      if (!e.defaultPrevented && !e.repeat && isLocalProject(projectCwdRef.current)) {
+        const action = resolveProjectActionShortcut(projectCwdRef.current, e);
+        if (action) {
+          e.preventDefault();
+          e.stopPropagation();
+          run(`project-action:${action.id}`, () => actions.current.onRunProjectAction(action));
+        }
       }
     };
     window.addEventListener("keydown", onKey, true);
@@ -10669,6 +10717,8 @@ function Workspace({
       onSelect={activateTab}
       onNew={onNew}
       onNewTerminal={onNewTerminal}
+      onRunProjectAction={onRunProjectAction}
+      projectActionsCwd={projectCwd}
       onOpenSettings={onOpenSettings}
       onOpenInbox={onOpenInbox}
       onOpenNotes={notesEnabled ? onOpenNotes : undefined}
@@ -10735,6 +10785,8 @@ function Workspace({
               onDeleteSessions={onDeleteHistorySessions}
               onOpenFile={onOpenFile}
               onOpenTerminal={onOpenTerminal}
+              onRunProjectAction={onRunProjectAction}
+              projectActionsCwd={projectCwd}
               onFileMoved={onFileMoved}
               onFileDeleted={onFileDeleted}
               canGoBack={

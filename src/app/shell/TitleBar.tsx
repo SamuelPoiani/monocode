@@ -5,8 +5,6 @@ import {
   DashboardSquare,
   Inbox,
   PanelLeft,
-  Plus,
-  Search,
   Settings,
   StickyNote,
   Terminal,
@@ -26,6 +24,8 @@ import {
 import { basename } from "../../platform/tauri/fs";
 import { looksLikeProject } from "../../features/projects/model/recents";
 import type { HarnessId } from "../../features/sessions/model/session";
+import { WorkspaceTitleActions } from "../../features/projects/ui/ProjectActionsButton";
+import type { ProjectAction } from "../../features/projects/model/projectActions";
 import { CwdPicker } from "../../features/projects/ui/CwdPicker";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
 import {
@@ -95,6 +95,8 @@ type Props = {
   onSelect: (id: string) => void;
   onNew: () => void;
   onNewTerminal?: () => void;
+  onRunProjectAction?: (action: ProjectAction) => void;
+  projectActionsCwd?: string;
   onOpenSettings?: () => void;
   onOpenInbox?: () => void;
   onOpenNotes?: () => void;
@@ -614,6 +616,8 @@ function TitleBarComponent({
   onSelect,
   onNew,
   onNewTerminal,
+  onRunProjectAction,
+  projectActionsCwd,
   onOpenSettings,
   onOpenInbox,
   onOpenNotes,
@@ -873,14 +877,12 @@ function TitleBarComponent({
               </IconButton>
             ) : null}
             {showProjectActions ? (
-              <>
-                <IconButton label={`Go to File (${MOD}P)`} onClick={onGoToFile}>
-                  <Search className="size-3.5" strokeWidth={1.75} />
-                </IconButton>
-                <IconButton label={`New session (${MOD}T)`} onClick={onNew}>
-                  <Plus className="size-3.5" strokeWidth={1.75} />
-                </IconButton>
-              </>
+              <WorkspaceTitleActions
+                project={projectActionsCwd ?? cwd}
+                onSearch={onGoToFile}
+                onNew={onNew}
+                onRunAction={onRunProjectAction}
+              />
             ) : null}
             {!projectRailOpen && !showCurrentProject && onOpenSettings ? (
               <IconButton label={`Settings (${MOD},)`} onClick={onOpenSettings}>

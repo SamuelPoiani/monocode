@@ -20,6 +20,8 @@ type MenuAction = {
   disabled?: boolean;
   danger?: boolean;
   checked?: boolean;
+  /** Icon button at the row's end that picks its own id, e.g. edit. */
+  secondary?: { id: string; label: string; icon: ReactNode };
 };
 
 export type ExplorerMenuItem =
@@ -188,7 +190,7 @@ export function ExplorerMenu({
   ) => {
     const highlighted = index === (inSubmenu ? submenuActive : active);
     const hasSubmenu = !!item.submenu?.length;
-    return (
+    const row = (
       <button
         key={item.id}
         id={`${menuId}-${inSubmenu ? "sub-" : ""}${index}`}
@@ -231,7 +233,7 @@ export function ExplorerMenu({
             onPick(item.id);
           }
         }}
-        className={`flex ${item.description ? "py-1.5" : "h-7"} w-full items-center gap-3 rounded-lg px-2 text-left text-[13px] leading-none ${
+        className={`flex ${item.description ? "py-1.5" : "h-7"} w-full items-center gap-3 rounded-lg px-2 ${item.secondary ? "pr-8 " : ""}text-left text-[13px] leading-none ${
           item.disabled
             ? "text-content/30"
             : item.danger
@@ -264,6 +266,26 @@ export function ExplorerMenu({
           </span>
         ) : null}
       </button>
+    );
+    const secondary = item.secondary;
+    if (!secondary) return row;
+    // A sibling, not a child: a button cannot nest inside the row's button.
+    return (
+      <div key={item.id} className="relative">
+        {row}
+        <button
+          type="button"
+          aria-label={secondary.label}
+          title={secondary.label}
+          disabled={item.disabled}
+          onMouseDown={(e) => e.preventDefault()}
+          onMouseEnter={() => setActive(index)}
+          onClick={() => onPick(secondary.id)}
+          className="absolute top-1/2 right-1 grid size-6 -translate-y-1/2 place-items-center rounded-md text-content/45 hover:bg-content/10 hover:text-content"
+        >
+          {secondary.icon}
+        </button>
+      </div>
     );
   };
 

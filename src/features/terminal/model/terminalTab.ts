@@ -6,6 +6,7 @@ export type TerminalMetaPatch = {
   cwd?: string;
   /** `null` clears a running command; omit to leave it unchanged. */
   foreground?: string | null;
+  initialCommandConsumed?: boolean;
 };
 
 export type RunningTerminal = {
@@ -33,7 +34,10 @@ export function applyTerminalMeta(
   patch: TerminalMetaPatch,
 ): FilePaneTab {
   if (!file.terminal) return file;
-  const path = patch.title ?? file.path;
+  const path = file.terminalTitle ?? patch.title ?? file.path;
+  const initialCommand = patch.initialCommandConsumed
+    ? undefined
+    : file.initialCommand;
   const cwd = patch.cwd ?? file.cwd;
   const foreground =
     patch.foreground === undefined
@@ -42,7 +46,8 @@ export function applyTerminalMeta(
   if (
     path === file.path &&
     cwd === file.cwd &&
-    foreground === file.foreground
+    foreground === file.foreground &&
+    initialCommand === file.initialCommand
   ) {
     return file;
   }
@@ -51,6 +56,7 @@ export function applyTerminalMeta(
     path,
     cwd,
     foreground,
+    initialCommand,
   };
 }
 

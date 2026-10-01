@@ -8,6 +8,7 @@ import {
   subscribePty,
   writePty,
 } from "../../../platform/tauri/pty";
+import { consumeInitialCommand } from "../model/initialCommand";
 import { isOscColorQuery, oscColorReply } from "../model/terminalChrome";
 import {
   isMacTerminalClearShortcut,
@@ -32,6 +33,7 @@ type Props = {
   id: string;
   cwd: string;
   active: boolean;
+  initialCommand?: string;
   onMetaChange?: (patch: TerminalMetaPatch) => void;
 };
 
@@ -138,7 +140,13 @@ function oscColors() {
   };
 }
 
-export function TerminalView({ id, cwd, active, onMetaChange }: Props) {
+export function TerminalView({
+  id,
+  cwd,
+  active,
+  initialCommand,
+  onMetaChange,
+}: Props) {
   const outerRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -244,8 +252,13 @@ export function TerminalView({ id, cwd, active, onMetaChange }: Props) {
     );
 
     const starting = spawnPty(id, cwd, term.cols, term.rows)
-      .then(() => {
-        if (!closed) spawned.current = true;
+      .then(async () => {
+        if (closed) return;
+        spawned.current = true;
+        if (initialCommand) {
+          onMetaChangeRef.current?.({ initialCommandConsumed: true });
+          await consumeInitialCommand(id, initialCommand);
+        }
       })
       .catch((error) => {
         spawned.current = false;

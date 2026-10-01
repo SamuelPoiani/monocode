@@ -61,7 +61,7 @@ export function CreateWorktreeDialog({
     setBusy(true);
     setError(undefined);
     try {
-      const tree = await createWorktree(baseCwd, name.trim(), base, existing);
+      const tree = await createWorktree(baseCwd, name.trim(), base, existing, cwd);
       await onCreated(tree);
     } catch (err) {
       setError(String(err));

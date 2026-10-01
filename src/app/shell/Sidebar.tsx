@@ -151,6 +151,8 @@ import { ProjectRail } from "./ProjectRail";
 import { InboxNotificationMenu } from "../../features/inbox/ui/InboxNotificationMenu";
 import { RailAction } from "./RailAction";
 import { TerminalSpinner } from "../../features/sessions/ui/TerminalSpinner";
+import { WorkspaceTitleActions } from "../../features/projects/ui/ProjectActionsButton";
+import type { ProjectAction } from "../../features/projects/model/projectActions";
 import { DevModeSlot, IconButton, TabVisitNav } from "./TitleBar";
 import { ProjectSearch } from "../../features/projects/ui/ProjectSearch";
 import { Popover } from "../../shared/ui/Popover";
@@ -263,6 +265,8 @@ type Props = {
   onDeleteSessions?: (sessionIds: readonly string[]) => void;
   onOpenFile: OpenFileFn;
   onOpenTerminal?: (cwd: string) => void;
+  onRunProjectAction?: (action: ProjectAction) => void;
+  projectActionsCwd?: string;
   onFileMoved?: (from: string, to: string) => void;
   onFileDeleted?: (path: string) => void;
   tab: SidebarTab;
@@ -356,6 +360,8 @@ function SidebarComponent({
   onDeleteSessions: onDeleteLocalSessions,
   onOpenFile,
   onOpenTerminal,
+  onRunProjectAction,
+  projectActionsCwd,
   onFileMoved,
   onFileDeleted,
   tab: requestedTab,
@@ -1607,7 +1613,12 @@ function SidebarComponent({
             <span className="min-w-0 flex-1 truncate text-sm font-medium leading-tight">
               Workspace
             </span>
-            <WorkspaceTitleActions onSearch={onGoToFile} onNew={onNew} />
+            <WorkspaceTitleActions
+              project={projectActionsCwd ?? cwd}
+              onSearch={onGoToFile}
+              onNew={onNew}
+              onRunAction={onRunProjectAction}
+            />
           </div>
           <div
             role="tablist"
@@ -1632,7 +1643,12 @@ function SidebarComponent({
                 onGoForward={onGoForward}
               />
               <DevModeSlot />
-              <WorkspaceTitleActions onSearch={onGoToFile} onNew={onNew} />
+              <WorkspaceTitleActions
+                project={projectActionsCwd ?? cwd}
+                onSearch={onGoToFile}
+                onNew={onNew}
+                onRunAction={onRunProjectAction}
+              />
               {!compactProjectRail && onToggleProjectRail ? (
                 <IconButton label="Toggle Projects" onClick={onToggleProjectRail}>
                   <PanelLeft className="size-3.5" strokeWidth={1.75} />
@@ -2635,33 +2651,6 @@ function CompactRailAction({
         />
       ) : null}
     </button>
-  );
-}
-
-function WorkspaceTitleActions({
-  onSearch,
-  onNew,
-}: {
-  onSearch?: () => void;
-  onNew?: () => void;
-}) {
-  if (!onSearch && !onNew) return null;
-  return (
-    <div
-      className="flex shrink-0 items-center gap-0.5"
-      data-tauri-drag-region="false"
-    >
-      {onSearch ? (
-        <IconButton label={`Go to File (${MOD}P)`} onClick={onSearch}>
-          <Search className="size-3.5" strokeWidth={1.75} />
-        </IconButton>
-      ) : null}
-      {onNew ? (
-        <IconButton label={`New session (${MOD}T)`} onClick={onNew}>
-          <Plus className="size-3.5" strokeWidth={1.75} />
-        </IconButton>
-      ) : null}
-    </div>
   );
 }
 

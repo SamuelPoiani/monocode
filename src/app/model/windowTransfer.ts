@@ -1,4 +1,4 @@
-import { leafIds, type WorkspaceTab } from "../../features/workspace/model/layout";
+import { leafIds, type FilePaneTab, type WorkspaceTab } from "../../features/workspace/model/layout";
 import type { ProjectTerminalDock } from "../../features/projects/model/projectTerminal";
 import type { Session } from "../../features/sessions/model/session";
 
@@ -44,11 +44,33 @@ export function collectWindowTransfer(
     : movingTabs[0].id;
 
   return {
-    tabs: movingTabs,
+    tabs: movingTabs.map((tab) => ({
+      ...tab,
+      editorPanes: tab.editorPanes.map((pane) => ({
+        ...pane,
+        files: pane.files.map(withoutInitialCommand),
+      })),
+      terminalPanes: (tab.terminalPanes ?? []).map((pane) => ({
+        ...pane,
+        files: pane.files.map(withoutInitialCommand),
+      })),
+    })),
     sessions: movingSessions,
     activeTabId: activeTabIdInGroup,
     projectCwd: movingSessions[0]?.cwd ?? fallbackCwd,
     dirtyFileIds: [...dirtyInTabs],
-    ...(projectTerminals.length > 0 ? { projectTerminals } : {}),
+    ...(projectTerminals.length > 0
+      ? {
+          projectTerminals: projectTerminals.map((dock) => ({
+            ...dock,
+            pane: { ...dock.pane, files: dock.pane.files.map(withoutInitialCommand) },
+          })),
+        }
+      : {}),
   };
+}
+
+function withoutInitialCommand(file: FilePaneTab): FilePaneTab {
+  const { initialCommand: _initialCommand, ...rest } = file;
+  return rest;
 }

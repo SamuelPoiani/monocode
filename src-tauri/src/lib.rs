@@ -27,6 +27,7 @@ mod notes;
 mod notifications;
 mod pasteboard;
 mod pi_usage;
+mod project_actions;
 mod project_logo;
 mod pty;
 #[cfg(target_os = "macos")]
@@ -454,6 +455,7 @@ pub fn run() {
             pi_usage::fetch_pi_usage,
             rate_limits::fetch_claude_usage,
             rate_limits::fetch_opencode_go_usage,
+            project_actions::run_project_action,
             pty::pty_spawn,
             pty::pty_write,
             pty::pty_resize,

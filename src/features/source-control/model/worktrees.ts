@@ -1,3 +1,4 @@
+import { notifyWorktreeActions } from "../../projects/model/worktreeActions";
 import { invoke } from "@tauri-apps/api/core";
 import { appendReadyHandoff, buildDeterministicHandoff } from "../../sessions/model/handoff";
 import { invokeWorkspace, notifyGitChanged } from "../../../platform/tauri/fs";
@@ -28,6 +29,7 @@ export async function createWorktree(
   branch: string,
   base: string,
   existing: boolean,
+  project = cwd,
 ) {
   const tree = await invoke<Worktree>("git_worktree_create", {
     cwd,
@@ -36,6 +38,7 @@ export async function createWorktree(
     existing,
   });
   notifyGitChanged();
+  await notifyWorktreeActions(project, tree.path);
   return tree;
 }
 
@@ -59,6 +62,7 @@ export async function createOrchestrationWorktree(
     project,
   });
   notifyGitChanged();
+  await notifyWorktreeActions(project ?? cwd, tree.path);
   return tree;
 }
 

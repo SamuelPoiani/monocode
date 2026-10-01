@@ -1,4 +1,5 @@
 import { projectKey } from "../../../shared/lib/paths";
+import { clearProjectActions, rebaseProjectActions } from "./projectActions";
 import { clearProjectLogo } from "./projectLogos";
 import { clearProjectChatBackground } from "./chatBackground";
 import {
@@ -47,6 +48,7 @@ export async function removeProjectData(path: string): Promise<void> {
   clearTabGroupSettings(key);
   removeProjectGroupAssignment(normalized);
   clearProjectProviders(key);
+  clearProjectActions(normalized);
   clearProjectSidebarTab(normalized);
   clearNestedChangesRepo(normalized);
 }
@@ -60,6 +62,7 @@ export function rebaseProjectData(from: string, to: string): void {
   rebaseProjectChatBackgroundSetting(oldKey, newKey);
   rebaseSessionFolderSettings(from, to);
   rebaseProjectProviders(oldKey, newKey);
+  rebaseProjectActions(from, to);
   rebaseProjectSidebarTab(from, to);
   rebaseNestedChangesRepo(from, to);
 }

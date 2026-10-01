@@ -258,6 +258,7 @@ export function ProjectTerminalDock({
             <TerminalView
               id={file.id}
               cwd={file.cwd}
+              initialCommand={file.initialCommand}
               active={focused && file.id === dock.pane.activeFileId}
               onMetaChange={(patch) => onTerminalMetaChange?.(file.id, patch)}
             />

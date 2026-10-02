@@ -113,6 +113,9 @@ import { ComposerRunner } from "./ComposerRunner";
 import { ContextMeter } from "./ContextMeter";
 import { AttachmentChip } from "./AttachmentChip";
 import { BranchPicker } from "../../source-control/ui/BranchPicker";
+import { NestedRepoBranchPicker } from "../../source-control/ui/NestedRepoBranchPicker";
+import { useNestedGitRepos } from "../../source-control/hooks/useNestedGitRepos";
+import { REMOTE_PATH_PREFIX } from "../../../shared/lib/remotePaths";
 import { WorktreePicker } from "../../source-control/ui/WorktreePicker";
 import {
   isWorkspaceModeShortcut,
@@ -670,6 +673,20 @@ export function Composer({
   const [createError, setCreateError] = useState<string | null>(null);
   const [createBusy, setCreateBusy] = useState(false);
   const remote = remoteSession;
+  const nestedReposActive =
+    !hideTopBar &&
+    !hideBranchPicker &&
+    !remote &&
+    !!executionCwd &&
+    executionCwd !== "~" &&
+    !executionCwd.startsWith(REMOTE_PATH_PREFIX);
+  const {
+    repos: nestedRepoPaths,
+    selected: nestedRepo,
+    select: selectNestedRepo,
+  } = useNestedGitRepos(executionCwd, undefined, nestedReposActive);
+  const hasNestedRepos =
+    nestedRepoPaths != null && nestedRepoPaths.length > 0 && nestedRepo != null;
   // Local indexes (files, skills) must never read a remote session's path.
   const localCwd = remote ? "" : executionCwd;
   const [files, setFiles] = useState<ProjectFile[]>(
@@ -1868,6 +1885,7 @@ export function Composer({
     if (disabled) return;
     if (
       !draftWorkspace ||
+      hasNestedRepos ||
       !onWorkspaceModeChange ||
       !enabled ||
       busy ||
@@ -2203,28 +2221,40 @@ export function Composer({
               {hideBranchPicker ? null : draftWorkspace &&
                 onWorkspaceModeChange &&
                 onWorktreeBaseChange ? (
-                <>
-                  <WorkspacePicker
-                    cwd={executionCwd}
-                    mode={workspaceMode ?? "current"}
-                    base={resolvedWorktreeBase}
+                hasNestedRepos ? (
+                  <NestedRepoBranchPicker
+                    root={executionCwd}
+                    repos={nestedRepoPaths}
+                    selectedRepo={nestedRepo}
+                    onRepoChange={selectNestedRepo}
                     enabled={enabled && !busy}
-                    onModeChange={onWorkspaceModeChange}
-                    onBaseChange={onWorktreeBaseChange}
-                    onSelectWorktree={onWorktreeChange}
-                    onOpenSettings={onManageWorktrees}
+                    onChange={onBranchChange}
                     onClose={() => ref.current?.focus()}
                   />
-                  {(workspaceMode ?? "current") === "current" ? (
-                    <BranchPicker
+                ) : (
+                  <>
+                    <WorkspacePicker
                       cwd={executionCwd}
-                      branch={branch}
+                      mode={workspaceMode ?? "current"}
+                      base={resolvedWorktreeBase}
                       enabled={enabled && !busy}
-                      onChange={onBranchChange}
+                      onModeChange={onWorkspaceModeChange}
+                      onBaseChange={onWorktreeBaseChange}
+                      onSelectWorktree={onWorktreeChange}
+                      onOpenSettings={onManageWorktrees}
                       onClose={() => ref.current?.focus()}
                     />
-                  ) : null}
-                </>
+                    {(workspaceMode ?? "current") === "current" ? (
+                      <BranchPicker
+                        cwd={executionCwd}
+                        branch={branch}
+                        enabled={enabled && !busy}
+                        onChange={onBranchChange}
+                        onClose={() => ref.current?.focus()}
+                      />
+                    ) : null}
+                  </>
+                )
               ) : worktreeRemoved && onWorktreeChange ? (
                 <WorktreePicker
                   cwd={cwd}
@@ -2243,13 +2273,25 @@ export function Composer({
                       worktree={pathKey(cwd) !== pathKey(executionCwd)}
                     />
                   ) : null}
-                  <BranchPicker
-                    cwd={executionCwd}
-                    branch={branch}
-                    enabled={enabled && !busy}
-                    onChange={onBranchChange}
-                    onClose={() => ref.current?.focus()}
-                  />
+                  {hasNestedRepos ? (
+                    <NestedRepoBranchPicker
+                      root={executionCwd}
+                      repos={nestedRepoPaths}
+                      selectedRepo={nestedRepo}
+                      onRepoChange={selectNestedRepo}
+                      enabled={enabled && !busy}
+                      onChange={onBranchChange}
+                      onClose={() => ref.current?.focus()}
+                    />
+                  ) : (
+                    <BranchPicker
+                      cwd={executionCwd}
+                      branch={branch}
+                      enabled={enabled && !busy}
+                      onChange={onBranchChange}
+                      onClose={() => ref.current?.focus()}
+                    />
+                  )}
                 </>
               )}
               <div className="ml-auto flex shrink-0 items-center">

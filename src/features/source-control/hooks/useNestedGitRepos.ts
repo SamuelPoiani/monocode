@@ -4,12 +4,15 @@ import {
   loadNestedChangesRepo,
   nestedGitRepos,
   saveNestedChangesRepo,
+  subscribeNestedChangesRepo,
 } from "../model/nestedRepos";
 
 export type NestedGitRepos = {
   /** Repositories nested in the plain folder `root`, relative to it; null
    * when `root` is a repository itself or has not been scanned yet. */
   repos: string[] | null;
+  /** The first scan for the current root has finished. */
+  scanned: boolean;
   /** The nested repository whose changes are shown. */
   selected: string | undefined;
   selectedCwd: string | undefined;
@@ -38,6 +41,11 @@ export function useNestedGitRepos(
   const [scan, setScan] = useState<{ root: string; repos: string[] | null }>();
   const [version, setVersion] = useState(0);
 
+  useEffect(
+    () => subscribeNestedChangesRepo(() => setVersion((value) => value + 1)),
+    [],
+  );
+
   useEffect(() => {
     if (!active || !root) return;
     let cancelled = false;
@@ -61,10 +69,11 @@ export function useNestedGitRepos(
     };
   }, [active, root]);
 
+  const scanned = active && scan?.root === root;
   const repos = active && scan && scan.root === root ? scan.repos : null;
   const saved = useMemo(
     () => (root ? loadNestedChangesRepo(root) : undefined),
-    // `version` re-reads the choice after `select` saves it.
+    // `version` re-reads the choice whenever any picker saves it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [root, version],
   );
@@ -84,7 +93,6 @@ export function useNestedGitRepos(
     (repo: string) => {
       if (!root) return;
       saveNestedChangesRepo(root, repo);
-      setVersion((value) => value + 1);
     },
     [root],
   );
@@ -98,6 +106,7 @@ export function useNestedGitRepos(
 
   return {
     repos,
+    scanned,
     selected,
     selectedCwd: root && selected ? joinPath(root, selected) : undefined,
     focused: focusedRepo != null,

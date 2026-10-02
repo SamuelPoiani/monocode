@@ -372,10 +372,16 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
       "account sign in login rename remove delete credentials profile usage limit quota exhausted",
   },
   {
-    id: "usage-meters",
+    id: "show-remaining-usage",
     section: "providers",
-    label: "Usage meters",
-    keywords: "usage limit quota remaining used left bar percent",
+    label: "Show remaining usage",
+    keywords: "usage limit meter bar left used quota percent",
+  },
+  {
+    id: "mask-emails",
+    section: "providers",
+    label: "Mask account emails",
+    keywords: "email privacy blur hide screenshot account",
   },
   {
     id: "footer-usage",
@@ -892,51 +898,6 @@ export function subscribeDiffViewer(onStoreChange: () => void) {
   window.addEventListener(DIFF_VIEWER_CHANGE_EVENT, onStoreChange);
   return () =>
     window.removeEventListener(DIFF_VIEWER_CHANGE_EVENT, onStoreChange);
-}
-
-const USAGE_METER_MODE_KEY = "monocode.usageMeterMode";
-
-/** Whether usage bars fill with what is left or with what has been used. */
-export type UsageMeterMode = "remaining" | "used";
-
-export const USAGE_METER_MODE_DEFAULT: UsageMeterMode = "remaining";
-
-/** Fired on `window` when the usage meter mode flips. */
-export const USAGE_METER_MODE_CHANGE_EVENT = "monocode:usage-meter-mode-change";
-
-function isUsageMeterMode(value: unknown): value is UsageMeterMode {
-  return value === "remaining" || value === "used";
-}
-
-export function loadUsageMeterMode(): UsageMeterMode {
-  try {
-    const raw = localStorage.getItem(USAGE_METER_MODE_KEY);
-    return isUsageMeterMode(raw) ? raw : USAGE_METER_MODE_DEFAULT;
-  } catch {
-    return USAGE_METER_MODE_DEFAULT;
-  }
-}
-
-export function saveUsageMeterMode(value: UsageMeterMode) {
-  const next = isUsageMeterMode(value) ? value : USAGE_METER_MODE_DEFAULT;
-  try {
-    localStorage.setItem(USAGE_METER_MODE_KEY, next);
-  } catch {
-    // private mode / quota
-  }
-  if (typeof window === "undefined") return;
-  window.dispatchEvent(
-    new CustomEvent<UsageMeterMode>(USAGE_METER_MODE_CHANGE_EVENT, {
-      detail: next,
-    }),
-  );
-}
-
-export function subscribeUsageMeterMode(onStoreChange: () => void) {
-  if (typeof window === "undefined") return () => {};
-  window.addEventListener(USAGE_METER_MODE_CHANGE_EVENT, onStoreChange);
-  return () =>
-    window.removeEventListener(USAGE_METER_MODE_CHANGE_EVENT, onStoreChange);
 }
 
 const USAGE_CHIP_WINDOW_KEY = "monocode.usageChipWindow";

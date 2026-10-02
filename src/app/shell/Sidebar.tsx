@@ -1,4 +1,10 @@
 import { NO_BRANCH_LABEL } from "../../features/source-control/model/worktrees";
+import {
+  type WorktreeFocus,
+  inWorktreeFocus,
+  useWorktreeFocus,
+} from "../../features/source-control/model/worktreeFocus";
+import { SidebarWorktreeSwitcher } from "../../features/source-control/ui/SidebarWorktreeSwitcher";
 import { OrchestrationSidebarAgents } from "../../features/orchestration/ui/OrchestrationSidebarAgents";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -226,6 +232,11 @@ type Props = {
   onChangesRepoChange?: (repo: string) => void;
   /** Branch identity shown for a worktree whose folder has a temporary name. */
   explorerRootLabel?: string;
+  /** Open tabs per worktree path key, for the worktree switcher. */
+  worktreeTabStats?: ReadonlyMap<string, { tabs: number; busy: boolean }>;
+  onSelectWorkspace?: (focus?: WorktreeFocus) => void;
+  workspaceSwitchPending?: boolean;
+  workspaceSwitchError?: string;
   open: boolean;
   sessions: SessionSummary[];
   busySessionIds: Set<string>;
@@ -333,6 +344,10 @@ function SidebarComponent({
   changesRepo,
   onChangesRepoChange,
   explorerRootLabel,
+  worktreeTabStats,
+  onSelectWorkspace,
+  workspaceSwitchPending,
+  workspaceSwitchError,
   open,
   sessions,
   busySessionIds,
@@ -621,11 +636,16 @@ function SidebarComponent({
   const pendingFirstLoad = remoteProject
     ? !!remote.machine && !remote.loaded && projectSessions.length === 0
     : pending && sessions.length === 0;
+  const worktreeFocus = useWorktreeFocus(cwd);
+  const focusedWorktree = remoteProject ? undefined : worktreeFocus;
   const listedSessions = mergeFolderSessionSummaries(
     projectSessions,
     remoteProject ? [] : openSessions,
     sessionFolders,
-  ).filter((session) => !session.orchestrationLeadId);
+  ).filter(
+    (session) =>
+      !session.orchestrationLeadId && inWorktreeFocus(session, focusedWorktree),
+  );
   const visibleSessions = [
     ...filterSessionsByQuery(
       filterSessionsByStatus(
@@ -1610,9 +1630,21 @@ function SidebarComponent({
             className="flex h-10 shrink-0 select-none items-center gap-1 border-b border-stroke pl-3 pr-1.5"
             data-tauri-drag-region="deep"
           >
-            <span className="min-w-0 flex-1 truncate text-sm font-medium leading-tight">
-              Workspace
-            </span>
+            <div className="flex min-w-0 flex-1 items-center">
+              {!remoteProject && cwd && cwd !== "~" ? (
+                <SidebarWorktreeSwitcher
+                  cwd={cwd}
+                  tabStats={worktreeTabStats}
+                  onSelect={onSelectWorkspace}
+                  pending={workspaceSwitchPending}
+                  switchError={workspaceSwitchError}
+                />
+              ) : (
+                <span className="min-w-0 truncate text-sm font-medium leading-tight">
+                  Workspace
+                </span>
+              )}
+            </div>
             <WorkspaceTitleActions
               project={projectActionsCwd ?? cwd}
               onSearch={onGoToFile}

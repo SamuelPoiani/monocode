@@ -372,6 +372,25 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
       "account sign in login rename remove delete credentials profile usage limit quota exhausted",
   },
   {
+    id: "show-remaining-usage",
+    section: "providers",
+    label: "Show remaining usage",
+    keywords: "usage limit meter bar left used quota percent",
+  },
+  {
+    id: "mask-emails",
+    section: "providers",
+    label: "Mask account emails",
+    keywords: "email privacy blur hide screenshot account",
+  },
+  {
+    id: "footer-usage",
+    section: "providers",
+    label: "Footer usage",
+    keywords:
+      "usage limit quota 5 hour five session weekly window chip status bar",
+  },
+  {
     id: "claude-hooks",
     section: "providers",
     label: "Claude Code hooks",
@@ -879,6 +898,52 @@ export function subscribeDiffViewer(onStoreChange: () => void) {
   window.addEventListener(DIFF_VIEWER_CHANGE_EVENT, onStoreChange);
   return () =>
     window.removeEventListener(DIFF_VIEWER_CHANGE_EVENT, onStoreChange);
+}
+
+const USAGE_CHIP_WINDOW_KEY = "monocode.usageChipWindow";
+
+/** Which limit window the footer usage chip shows. */
+export type UsageChipWindow = "all" | "session" | "weekly";
+
+export const USAGE_CHIP_WINDOW_DEFAULT: UsageChipWindow = "all";
+
+/** Fired on `window` when the footer usage chip window flips. */
+export const USAGE_CHIP_WINDOW_CHANGE_EVENT =
+  "monocode:usage-chip-window-change";
+
+function isUsageChipWindow(value: unknown): value is UsageChipWindow {
+  return value === "all" || value === "session" || value === "weekly";
+}
+
+export function loadUsageChipWindow(): UsageChipWindow {
+  try {
+    const raw = localStorage.getItem(USAGE_CHIP_WINDOW_KEY);
+    return isUsageChipWindow(raw) ? raw : USAGE_CHIP_WINDOW_DEFAULT;
+  } catch {
+    return USAGE_CHIP_WINDOW_DEFAULT;
+  }
+}
+
+export function saveUsageChipWindow(value: UsageChipWindow) {
+  const next = isUsageChipWindow(value) ? value : USAGE_CHIP_WINDOW_DEFAULT;
+  try {
+    localStorage.setItem(USAGE_CHIP_WINDOW_KEY, next);
+  } catch {
+    // private mode / quota
+  }
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent<UsageChipWindow>(USAGE_CHIP_WINDOW_CHANGE_EVENT, {
+      detail: next,
+    }),
+  );
+}
+
+export function subscribeUsageChipWindow(onStoreChange: () => void) {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(USAGE_CHIP_WINDOW_CHANGE_EVENT, onStoreChange);
+  return () =>
+    window.removeEventListener(USAGE_CHIP_WINDOW_CHANGE_EVENT, onStoreChange);
 }
 
 const FORMAT_ON_SAVE_KEY = "monocode.formatOnSave";

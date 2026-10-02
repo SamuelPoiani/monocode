@@ -7,7 +7,12 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ProviderRateLimits } from "../../features/providers/model/rateLimits";
 import { projectKey } from "../../shared/lib/paths";
 import { saveTabGroupMascot } from "../../features/workspace/model/tabGroups";
+import { saveUsageChipWindow } from "../../features/settings/model/settings";
 import { needsProviderLogin, UsageProviderChip } from "./UsageProviderChip";
+import {
+  saveMaskEmails,
+  saveShowRemainingUsage,
+} from "../../features/settings/model/displayPrefs";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async () => null),
@@ -128,6 +133,7 @@ describe("UsageProviderChip", () => {
   });
 
   it("opens a column of detailed progress bars", async () => {
+    saveShowRemainingUsage(true);
     act(() =>
       root.render(
         createElement(UsageProviderChip, { limits: codexLimits(), now }),
@@ -164,7 +170,30 @@ describe("UsageProviderChip", () => {
     );
   });
 
+  it("fills bars with used capacity by default", async () => {
+    act(() =>
+      root.render(
+        createElement(UsageProviderChip, { limits: codexLimits(), now }),
+      ),
+    );
+
+    const trigger = button("Codex usage details");
+    expect(trigger.querySelector(".w-8 > span")?.getAttribute("style")).toBe(
+      "width: 81%;",
+    );
+    await act(async () => trigger.click());
+
+    const weeklyBar = document.querySelector(
+      '[role="dialog"] [aria-label="Weekly limit used"]',
+    );
+    expect(weeklyBar?.getAttribute("aria-valuenow")).toBe("81");
+    expect(weeklyBar?.querySelector("span")?.getAttribute("style")).toBe(
+      "width: 81%;",
+    );
+  });
+
   it("shows a full bar before usage and an empty bar when exhausted", async () => {
+    saveShowRemainingUsage(true);
     const limits = codexLimits();
     limits.session!.usedPercent = 0;
     limits.weekly!.usedPercent = 100;
@@ -194,7 +223,39 @@ describe("UsageProviderChip", () => {
     );
   });
 
+  it("shows only the chosen footer window, falling back when it is missing", () => {
+    act(() =>
+      root.render(
+        createElement(UsageProviderChip, { limits: codexLimits(), now }),
+      ),
+    );
+    const trigger = button("Codex usage details");
+    expect(trigger.textContent).toContain("42%");
+    expect(trigger.textContent).toContain("81%");
+
+    act(() => saveUsageChipWindow("session"));
+    expect(trigger.textContent).toContain("42%");
+    expect(trigger.textContent).not.toContain("81%");
+    expect(trigger.querySelector(".w-8 > span")?.getAttribute("style")).toBe(
+      "width: 42%;",
+    );
+
+    act(() => saveUsageChipWindow("weekly"));
+    expect(trigger.textContent).not.toContain("42%");
+    expect(trigger.textContent).toContain("81%");
+
+    const sessionOnly = codexLimits();
+    sessionOnly.weekly = null;
+    act(() =>
+      root.render(
+        createElement(UsageProviderChip, { limits: sessionOnly, now }),
+      ),
+    );
+    expect(button("Codex usage details").textContent).toContain("42%");
+  });
+
   it("switches between named accounts from the usage popover", async () => {
+    saveShowRemainingUsage(true);
     const onSelectAccount = vi.fn();
     act(() =>
       root.render(
@@ -237,6 +298,7 @@ describe("UsageProviderChip", () => {
   });
 
   it("reveals emails independently of account switching and hides them on reopening", async () => {
+    saveMaskEmails(true);
     vi.mocked(invoke).mockImplementation(async (command) =>
       command === "provider_account_identity"
         ? { email: "user@example.com", plan: "Pro" }

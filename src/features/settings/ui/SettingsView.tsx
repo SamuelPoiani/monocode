@@ -236,6 +236,8 @@ import {
   AccountStatusLabel,
   AccountUsageMeters,
   AccountUsageRefresh,
+  useUsageChipWindow,
+  useUsageMeterMode,
 } from "../../providers/ui/ProviderAccountUsage";
 import {
   loadSessionSidebarFilters,
@@ -319,6 +321,8 @@ import {
   subscribeKeybindings,
   type KeybindingOverride,
   saveTabAnimationsEnabled,
+  saveUsageChipWindow,
+  saveUsageMeterMode,
   searchSettings,
   settingsSectionDescription,
   settingsSectionLabel,
@@ -3126,6 +3130,9 @@ function ProvidersPage({
     }
   }, [scope, scopeOptions]);
 
+  const usageMeterMode = useUsageMeterMode();
+  const usageChipWindow = useUsageChipWindow();
+
   const onClaudeHooks = (next: boolean) => {
     saveClaudeHooks(next);
     setClaudeHooks(next);
@@ -3170,6 +3177,40 @@ function ProvidersPage({
   return (
     <>
       <ProviderAccountsSettings />
+
+      <Group title="Usage">
+        <Row
+          id="usage-meters"
+          label="Usage meters"
+          description="Remaining fills each bar with what is left and drains it as you use the limit. Used fills the bar as you spend it."
+        >
+          <Segmented
+            label="Usage meters"
+            value={usageMeterMode}
+            options={[
+              { value: "remaining", label: "Remaining" },
+              { value: "used", label: "Used" },
+            ]}
+            onChange={saveUsageMeterMode}
+          />
+        </Row>
+        <Row
+          id="footer-usage"
+          label="Footer usage"
+          description="Which limit the usage control in the footer shows. Providers without that window keep showing all of theirs. The usage popover always lists every window."
+        >
+          <Segmented
+            label="Footer usage"
+            value={usageChipWindow}
+            options={[
+              { value: "all", label: "Both" },
+              { value: "session", label: "5-hour" },
+              { value: "weekly", label: "Weekly" },
+            ]}
+            onChange={saveUsageChipWindow}
+          />
+        </Row>
+      </Group>
 
       <Group
         id="agent-clis"

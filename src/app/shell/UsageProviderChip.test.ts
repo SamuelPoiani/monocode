@@ -7,6 +7,10 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ProviderRateLimits } from "../../features/providers/model/rateLimits";
 import { projectKey } from "../../shared/lib/paths";
 import { saveTabGroupMascot } from "../../features/workspace/model/tabGroups";
+import {
+  saveUsageChipWindow,
+  saveUsageMeterMode,
+} from "../../features/settings/model/settings";
 import { needsProviderLogin, UsageProviderChip } from "./UsageProviderChip";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -192,6 +196,67 @@ describe("UsageProviderChip", () => {
     expect(weeklyBar?.querySelector("span")?.getAttribute("style")).toBe(
       "width: 0%;",
     );
+  });
+
+  it("fills bars with usage when the used meter mode is chosen", async () => {
+    saveUsageMeterMode("used");
+    act(() =>
+      root.render(
+        createElement(UsageProviderChip, { limits: codexLimits(), now }),
+      ),
+    );
+
+    expect(
+      button("Codex usage details")
+        .querySelector(".w-8 > span")
+        ?.getAttribute("style"),
+    ).toBe("width: 81%;");
+    await act(async () => button("Codex usage details").click());
+
+    const dialog = document.querySelector('[role="dialog"]');
+    const sessionBar = dialog?.querySelector('[aria-label="5-hour limit used"]');
+    expect(sessionBar?.getAttribute("aria-valuenow")).toBe("42");
+    expect(sessionBar?.querySelector("span")?.getAttribute("style")).toBe(
+      "width: 42%;",
+    );
+
+    act(() => saveUsageMeterMode("remaining"));
+    expect(
+      dialog
+        ?.querySelector('[aria-label="5-hour limit remaining"]')
+        ?.getAttribute("aria-valuenow"),
+    ).toBe("58");
+  });
+
+  it("shows only the chosen footer window, falling back when it is missing", () => {
+    act(() =>
+      root.render(
+        createElement(UsageProviderChip, { limits: codexLimits(), now }),
+      ),
+    );
+    const trigger = button("Codex usage details");
+    expect(trigger.textContent).toContain("42%");
+    expect(trigger.textContent).toContain("81%");
+
+    act(() => saveUsageChipWindow("session"));
+    expect(trigger.textContent).toContain("42%");
+    expect(trigger.textContent).not.toContain("81%");
+    expect(trigger.querySelector(".w-8 > span")?.getAttribute("style")).toBe(
+      "width: 58%;",
+    );
+
+    act(() => saveUsageChipWindow("weekly"));
+    expect(trigger.textContent).not.toContain("42%");
+    expect(trigger.textContent).toContain("81%");
+
+    const sessionOnly = codexLimits();
+    sessionOnly.weekly = null;
+    act(() =>
+      root.render(
+        createElement(UsageProviderChip, { limits: sessionOnly, now }),
+      ),
+    );
+    expect(button("Codex usage details").textContent).toContain("42%");
   });
 
   it("switches between named accounts from the usage popover", async () => {

@@ -122,15 +122,23 @@ export function mentionLabel(file: ProjectFile, index: MentionIndex): string {
   return index.labelOf.get(file.path) ?? file.relative;
 }
 
-/** Files the picker offers: recents first without a query, fuzzy after. */
+/**
+ * Files the picker offers: recents first without a query, fuzzy after.
+ * `scopeDir` (a project-relative folder, such as the selected repository of
+ * a multi-repo project) limits the picker to that folder and its contents;
+ * labels still come from the whole project's mention index.
+ */
 export function rankMentionFiles(
   files: ProjectFile[],
   query: string,
   recents: string[],
   limit = MAX_PICKER,
+  scopeDir?: string,
 ): RankedFile[] {
-  const usable = withMentionDirectories(files).filter((file) =>
-    isMentionableRelative(file.relative),
+  const usable = withMentionDirectories(files).filter(
+    (file) =>
+      isMentionableRelative(file.relative) &&
+      (!scopeDir || isInsideRelative(file.relative, scopeDir)),
   );
   const needle = query.replace(/\/+$/, "").trim();
   if (needle) return rankProjectFiles(usable, needle, recents, limit);
@@ -303,6 +311,10 @@ function mentionDirPath(file: ProjectFile, relativeDir: string): string {
     return file.path.slice(0, file.path.length - winTrail.length);
   }
   return file.path.slice(0, file.path.length - trail.length);
+}
+
+function isInsideRelative(relative: string, dir: string): boolean {
+  return relative === dir || relative.startsWith(`${dir}/`);
 }
 
 function pathDepth(relative: string): number {

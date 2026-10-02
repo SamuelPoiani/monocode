@@ -687,6 +687,24 @@ export function Composer({
   } = useNestedGitRepos(executionCwd, undefined, nestedReposActive);
   const hasNestedRepos =
     nestedRepoPaths != null && nestedRepoPaths.length > 0 && nestedRepo != null;
+  // The composer starts on the whole folder. Picking one repository scopes
+  // `@` to it and follows the selection shared with the Changes panel, until
+  // the folder changes.
+  const [scopedRepoRoot, setScopedRepoRoot] = useState<string>();
+  const composerRepo =
+    hasNestedRepos &&
+    scopedRepoRoot != null &&
+    pathKey(scopedRepoRoot) === pathKey(executionCwd)
+      ? nestedRepo
+      : undefined;
+  const changeComposerRepo = (repo: string | undefined) => {
+    if (!repo) {
+      setScopedRepoRoot(undefined);
+      return;
+    }
+    setScopedRepoRoot(executionCwd);
+    selectNestedRepo(repo);
+  };
   // Local indexes (files, skills) must never read a remote session's path.
   const localCwd = remote ? "" : executionCwd;
   const [files, setFiles] = useState<ProjectFile[]>(
@@ -811,6 +829,8 @@ export function Composer({
           files,
           mention?.query ?? "",
           recentOpenedFiles(executionCwd),
+          undefined,
+          composerRepo,
         )
       : [];
     const noteHits = notesEnabled
@@ -818,7 +838,15 @@ export function Composer({
       : [];
     const seen = new Set(noteHits.map((file) => file.path));
     return [...noteHits, ...fileHits.filter((file) => !seen.has(file.path))];
-  }, [executionCwd, files, mention?.query, mentionOpen, notes, notesEnabled]);
+  }, [
+    composerRepo,
+    executionCwd,
+    files,
+    mention?.query,
+    mentionOpen,
+    notes,
+    notesEnabled,
+  ]);
 
   const syncHasValue = useCallback(
     (text: string, files: Attachment[]) => {
@@ -2225,8 +2253,8 @@ export function Composer({
                   <NestedRepoBranchPicker
                     root={executionCwd}
                     repos={nestedRepoPaths}
-                    selectedRepo={nestedRepo}
-                    onRepoChange={selectNestedRepo}
+                    selectedRepo={composerRepo}
+                    onRepoChange={changeComposerRepo}
                     enabled={enabled && !busy}
                     onChange={onBranchChange}
                     onClose={() => ref.current?.focus()}
@@ -2277,8 +2305,8 @@ export function Composer({
                     <NestedRepoBranchPicker
                       root={executionCwd}
                       repos={nestedRepoPaths}
-                      selectedRepo={nestedRepo}
-                      onRepoChange={selectNestedRepo}
+                      selectedRepo={composerRepo}
+                      onRepoChange={changeComposerRepo}
                       enabled={enabled && !busy}
                       onChange={onBranchChange}
                       onClose={() => ref.current?.focus()}

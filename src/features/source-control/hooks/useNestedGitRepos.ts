@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { joinPath, pathKey } from "../../../shared/lib/paths";
 import {
   loadNestedChangesRepo,
+  loadNestedComposerFocus,
   nestedGitRepos,
   saveNestedChangesRepo,
+  saveNestedComposerFocus,
   subscribeNestedChangesRepo,
 } from "../model/nestedRepos";
 
@@ -19,6 +21,9 @@ export type NestedGitRepos = {
   /** `focusedCwd` is one of the nested repositories. */
   focused: boolean;
   select: (repo: string) => void;
+  /** The composer is focused on `selected` rather than every repository. */
+  composerFocused: boolean;
+  setComposerFocused: (focused: boolean) => void;
 };
 
 function sameRepos(a: string[] | null, b: string[] | null): boolean {
@@ -77,6 +82,11 @@ export function useNestedGitRepos(
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [root, version],
   );
+  const composerFocused = useMemo(
+    () => (root ? loadNestedComposerFocus(root) : false),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [root, version],
+  );
   const selected = repos?.length
     ? saved && repos.includes(saved)
       ? saved
@@ -96,6 +106,12 @@ export function useNestedGitRepos(
     },
     [root],
   );
+  const setComposerFocused = useCallback(
+    (focused: boolean) => {
+      if (root) saveNestedComposerFocus(root, focused);
+    },
+    [root],
+  );
 
   useEffect(() => {
     if (focusedRepo && focusedRepo !== saved) select(focusedRepo);
@@ -111,5 +127,7 @@ export function useNestedGitRepos(
     selectedCwd: root && selected ? joinPath(root, selected) : undefined,
     focused: focusedRepo != null,
     select,
+    composerFocused,
+    setComposerFocused,
   };
 }

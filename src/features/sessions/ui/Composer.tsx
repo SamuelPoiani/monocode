@@ -54,13 +54,14 @@ import {
   peekProjectFiles,
   recentOpenedFiles,
   subscribeProjectFiles,
+  type RankedFile,
 } from "../../files/model/fileIndex";
 import {
   buildMentionIndex,
   fileMentionParts,
   mentionLabel,
   mentionTokenAt,
-  rankMentionFiles,
+  rankScopedMentionFiles,
   replaceMentionToken,
   type MentionIndex,
   type MentionToken,
@@ -684,26 +685,19 @@ export function Composer({
     repos: nestedRepoPaths,
     selected: nestedRepo,
     select: selectNestedRepo,
+    composerFocused: nestedRepoFocused,
+    setComposerFocused: setNestedRepoFocused,
   } = useNestedGitRepos(executionCwd, undefined, nestedReposActive);
   const hasNestedRepos =
     nestedRepoPaths != null && nestedRepoPaths.length > 0 && nestedRepo != null;
-  // The composer starts on the whole folder. Picking one repository scopes
-  // `@` to it and follows the selection shared with the Changes panel, until
-  // the folder changes.
-  const [scopedRepoRoot, setScopedRepoRoot] = useState<string>();
+  // Each folder remembers whether its composer shows every repository or
+  // focuses `@` on one. A focused composer follows the repository selection
+  // shared with the Changes panel.
   const composerRepo =
-    hasNestedRepos &&
-    scopedRepoRoot != null &&
-    pathKey(scopedRepoRoot) === pathKey(executionCwd)
-      ? nestedRepo
-      : undefined;
+    hasNestedRepos && nestedRepoFocused ? nestedRepo : undefined;
   const changeComposerRepo = (repo: string | undefined) => {
-    if (!repo) {
-      setScopedRepoRoot(undefined);
-      return;
-    }
-    setScopedRepoRoot(executionCwd);
-    selectNestedRepo(repo);
+    if (repo) selectNestedRepo(repo);
+    setNestedRepoFocused(!!repo);
   };
   // Local indexes (files, skills) must never read a remote session's path.
   const localCwd = remote ? "" : executionCwd;
@@ -822,22 +816,31 @@ export function Composer({
   );
   const mentionIndexRef = useRef<MentionIndex>(mentionIndex);
   mentionIndexRef.current = mentionIndex;
-  const rankedFiles = useMemo(() => {
-    if (!mentionOpen) return [];
-    const fileHits = looksLikeProject(executionCwd)
-      ? rankMentionFiles(
+  const mentionRanking = useMemo((): {
+    files: RankedFile[];
+    /** Index where matches outside the focused repository start. */
+    outsideFrom?: number;
+  } => {
+    if (!mentionOpen) return { files: [] };
+    const { files: fileHits, outside } = looksLikeProject(executionCwd)
+      ? rankScopedMentionFiles(
           files,
           mention?.query ?? "",
           recentOpenedFiles(executionCwd),
-          undefined,
           composerRepo,
         )
-      : [];
+      : { files: [], outside: [] };
     const noteHits = notesEnabled
       ? rankNoteFiles(notes, mention?.query ?? "")
       : [];
     const seen = new Set(noteHits.map((file) => file.path));
-    return [...noteHits, ...fileHits.filter((file) => !seen.has(file.path))];
+    const scoped = [
+      ...noteHits,
+      ...fileHits.filter((file) => !seen.has(file.path)),
+    ];
+    return outside.length > 0
+      ? { files: [...scoped, ...outside], outsideFrom: scoped.length }
+      : { files: scoped };
   }, [
     composerRepo,
     executionCwd,
@@ -847,6 +850,7 @@ export function Composer({
     notes,
     notesEnabled,
   ]);
+  const rankedFiles = mentionRanking.files;
 
   const syncHasValue = useCallback(
     (text: string, files: Attachment[]) => {
@@ -2200,6 +2204,8 @@ export function Composer({
           <div className="absolute inset-x-0 bottom-full z-30 mb-1">
             <FileMentionPicker
               files={rankedFiles}
+              outsideFrom={mentionRanking.outsideFrom}
+              outsideLabel={composerRepo ? `Outside ${composerRepo}` : undefined}
               query={mention?.query ?? ""}
               active={mentionActive}
               loading={

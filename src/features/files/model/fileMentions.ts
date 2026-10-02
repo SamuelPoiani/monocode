@@ -45,6 +45,7 @@ const TRAILING_PUNCTUATION = new Set([
 ]);
 const MAX_QUERY = 120;
 const MAX_PICKER = 30;
+const MAX_OUTSIDE_SCOPE = 5;
 
 /** Mention token that contains `cursor`, if the user is typing `@file`. */
 export function mentionTokenAt(
@@ -122,25 +123,71 @@ export function mentionLabel(file: ProjectFile, index: MentionIndex): string {
   return index.labelOf.get(file.path) ?? file.relative;
 }
 
-/**
- * Files the picker offers: recents first without a query, fuzzy after.
- * `scopeDir` (a project-relative folder, such as the selected repository of
- * a multi-repo project) limits the picker to that folder and its contents;
- * labels still come from the whole project's mention index.
- */
+/** Files the picker offers: recents first without a query, fuzzy after. */
 export function rankMentionFiles(
   files: ProjectFile[],
   query: string,
   recents: string[],
   limit = MAX_PICKER,
-  scopeDir?: string,
 ): RankedFile[] {
-  const usable = withMentionDirectories(files).filter(
-    (file) =>
-      isMentionableRelative(file.relative) &&
-      (!scopeDir || isInsideRelative(file.relative, scopeDir)),
+  return rankUsableMentions(mentionableFiles(files), query, recents, limit);
+}
+
+export type ScopedMentionFiles = {
+  /** Entries inside the scope, or every entry without one. */
+  files: RankedFile[];
+  /** The best matches outside the scope, once something is typed. */
+  outside: RankedFile[];
+};
+
+/**
+ * Like `rankMentionFiles`, focused on `scopeDir`, a project-relative folder
+ * such as the selected repository of a multi-repo project. Typing still
+ * reaches the rest of the project through a few `outside` matches. Labels
+ * come from the whole project's mention index either way.
+ */
+export function rankScopedMentionFiles(
+  files: ProjectFile[],
+  query: string,
+  recents: string[],
+  scopeDir: string | undefined,
+  limit = MAX_PICKER,
+): ScopedMentionFiles {
+  const usable = mentionableFiles(files);
+  if (!scopeDir) {
+    return { files: rankUsableMentions(usable, query, recents, limit), outside: [] };
+  }
+  const inside: ProjectFile[] = [];
+  const outside: ProjectFile[] = [];
+  for (const file of usable) {
+    (isInsideRelative(file.relative, scopeDir) ? inside : outside).push(file);
+  }
+  const needle = mentionNeedle(query);
+  return {
+    files: rankUsableMentions(inside, query, recents, limit),
+    outside: needle
+      ? rankProjectFiles(outside, needle, recents, MAX_OUTSIDE_SCOPE)
+      : [],
+  };
+}
+
+function mentionableFiles(files: ProjectFile[]): ProjectFile[] {
+  return withMentionDirectories(files).filter((file) =>
+    isMentionableRelative(file.relative),
   );
-  const needle = query.replace(/\/+$/, "").trim();
+}
+
+function mentionNeedle(query: string): string {
+  return query.replace(/\/+$/, "").trim();
+}
+
+function rankUsableMentions(
+  usable: ProjectFile[],
+  query: string,
+  recents: string[],
+  limit: number,
+): RankedFile[] {
+  const needle = mentionNeedle(query);
   if (needle) return rankProjectFiles(usable, needle, recents, limit);
 
   const byPath = new Map(usable.map((file) => [file.path, file]));

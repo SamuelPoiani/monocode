@@ -54,14 +54,14 @@ import {
   peekProjectFiles,
   recentOpenedFiles,
   subscribeProjectFiles,
-  type RankedFile,
 } from "../../files/model/fileIndex";
 import {
   buildMentionIndex,
   fileMentionParts,
+  linkedMentionFiles,
   mentionLabel,
   mentionTokenAt,
-  rankScopedMentionFiles,
+  rankMentionFiles,
   replaceMentionToken,
   type MentionIndex,
   type MentionToken,
@@ -72,6 +72,7 @@ import {
   type InboxComposerCard,
 } from "../../inbox/model/githubTasks";
 import type { HandoffComposerCard } from "../model/handoff";
+import { OrchestrationProjects } from "../../orchestration/ui/OrchestrationProjects";
 import type { OrchestratorStatus } from "../../orchestration/model/orchestratorMode";
 import {
   looksLikeProject,
@@ -126,6 +127,7 @@ import {
 import type { Worktree } from "../../source-control/model/worktrees";
 import { CwdPicker } from "../../projects/ui/CwdPicker";
 import { FileMentionPicker } from "./FileMentionPicker";
+import { useLinkedMentionProjects } from "./useLinkedMentionProjects";
 import { McpServerPicker } from "./McpServerPicker";
 import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
 import { InboxMiniCard } from "../../inbox/ui/InboxMiniCard";
@@ -690,9 +692,8 @@ export function Composer({
   } = useNestedGitRepos(executionCwd, undefined, nestedReposActive);
   const hasNestedRepos =
     nestedRepoPaths != null && nestedRepoPaths.length > 0 && nestedRepo != null;
-  // Each folder remembers whether its composer shows every repository or
-  // focuses `@` on one. A focused composer follows the repository selection
-  // shared with the Changes panel.
+  // The branch picker follows the repository selection shared with Changes.
+  // File mentions search the whole checkout regardless of that selection.
   const composerRepo =
     hasNestedRepos && nestedRepoFocused ? nestedRepo : undefined;
   const changeComposerRepo = (repo: string | undefined) => {
@@ -806,9 +807,26 @@ export function Composer({
     // The indent can rewrap the first line after the input already resized.
     if (ref.current) resizeComposer(ref.current);
   }, [modeIndent]);
+  // A leading mode command also makes linked-project references available.
+  const orchestrationActive =
+    orchestratorMode || leadingMode?.name === ORCHESTRATOR_COMMAND.name;
+  const orchestratorRunActive =
+    orchestratorStatus === "running" || orchestratorStatus === "paused";
+  const linkedMentions = useLinkedMentionProjects({
+    sessionId,
+    checkoutCwd: localCwd,
+    enabled: !remote && (orchestrationActive || orchestratorRunActive),
+    pickerOpen: mentionOpen,
+  });
   const mentionFiles = useMemo(
-    () => (notesEnabled ? [...files, ...notesAsProjectFiles(notes)] : files),
-    [files, notes, notesEnabled],
+    () => [
+      ...files,
+      ...(notesEnabled ? notesAsProjectFiles(notes) : []),
+      ...linkedMentions.files.flatMap(({ name, files }) =>
+        linkedMentionFiles(name, files),
+      ),
+    ],
+    [files, linkedMentions.files, notes, notesEnabled],
   );
   const mentionIndex = useMemo(
     () => buildMentionIndex(mentionFiles),
@@ -816,41 +834,35 @@ export function Composer({
   );
   const mentionIndexRef = useRef<MentionIndex>(mentionIndex);
   mentionIndexRef.current = mentionIndex;
-  const mentionRanking = useMemo((): {
-    files: RankedFile[];
-    /** Index where matches outside the focused repository start. */
-    outsideFrom?: number;
-  } => {
-    if (!mentionOpen) return { files: [] };
-    const { files: fileHits, outside } = looksLikeProject(executionCwd)
-      ? rankScopedMentionFiles(
+  const rankedFiles = useMemo(() => {
+    if (!mentionOpen) return [];
+    const fileHits = looksLikeProject(executionCwd)
+      ? rankMentionFiles(
           files,
           mention?.query ?? "",
           recentOpenedFiles(executionCwd),
-          composerRepo,
+          undefined,
+          linkedMentions.files,
         )
-      : { files: [], outside: [] };
-    const noteHits = notesEnabled
-      ? rankNoteFiles(notes, mention?.query ?? "")
       : [];
+    const linkedQuery = linkedMentions.files.some(({ name }) =>
+      mention?.query.startsWith(`${name}:`),
+    );
+    const noteHits =
+      notesEnabled && !linkedQuery
+        ? rankNoteFiles(notes, mention?.query ?? "")
+        : [];
     const seen = new Set(noteHits.map((file) => file.path));
-    const scoped = [
-      ...noteHits,
-      ...fileHits.filter((file) => !seen.has(file.path)),
-    ];
-    return outside.length > 0
-      ? { files: [...scoped, ...outside], outsideFrom: scoped.length }
-      : { files: scoped };
+    return [...noteHits, ...fileHits.filter((file) => !seen.has(file.path))];
   }, [
-    composerRepo,
     executionCwd,
     files,
+    linkedMentions.files,
     mention?.query,
     mentionOpen,
     notes,
     notesEnabled,
   ]);
-  const rankedFiles = mentionRanking.files;
 
   const syncHasValue = useCallback(
     (text: string, files: Attachment[]) => {
@@ -868,11 +880,6 @@ export function Composer({
   // A leading mode command in the text shows the same pill as picking the mode.
   const operatorActive =
     operatorSelected || leadingMode?.name === OPERATOR_COMMAND.name;
-  const orchestrationActive =
-    orchestratorMode || leadingMode?.name === ORCHESTRATOR_COMMAND.name;
-  // A running or paused lead shows its run state instead of the mode pill.
-  const orchestratorRunActive =
-    orchestratorStatus === "running" || orchestratorStatus === "paused";
   const draftActive = draftSelected || leadingMode?.name === DRAFT_COMMAND.name;
   const planActive = planSelected || leadingMode?.name === PLAN_COMMAND.name;
 
@@ -1331,7 +1338,7 @@ export function Composer({
     // composer's own DOM subtree — check the whole document for those.
     if (
       document.querySelector(
-        "[data-model-picker], [data-access-picker], [data-model-settings], [data-file-picker], [data-branch-picker]",
+        "[data-model-picker], [data-access-picker], [data-model-settings], [data-file-picker], [data-branch-picker], [data-orchestration-project-picker]",
       )
     )
       return;
@@ -2204,14 +2211,14 @@ export function Composer({
           <div className="absolute inset-x-0 bottom-full z-30 mb-1">
             <FileMentionPicker
               files={rankedFiles}
-              outsideFrom={mentionRanking.outsideFrom}
-              outsideLabel={composerRepo ? `Outside ${composerRepo}` : undefined}
               query={mention?.query ?? ""}
               active={mentionActive}
               loading={
-                looksLikeProject(executionCwd) &&
-                peekProjectFiles(executionCwd) == null
+                (looksLikeProject(executionCwd) &&
+                  peekProjectFiles(executionCwd) == null) ||
+                linkedMentions.loading
               }
+              error={linkedMentions.error}
               includeNotes={notesEnabled}
               onActive={setMentionActive}
               onPick={pickMention}
@@ -2659,6 +2666,19 @@ export function Composer({
                 }}
               />
             ) : null}
+            {!compact &&
+              !remote &&
+              !hideTopBar &&
+              sessionId &&
+              cwd &&
+              (orchestrationActive || orchestratorRunActive) && (
+                <OrchestrationProjects
+                  sessionId={sessionId}
+                  projectCwd={cwd}
+                  checkoutCwd={executionCwd}
+                  disabled={disabled || busy}
+                />
+              )}
             {!compact && planActive ? (
               <ModeCommandPill
                 name={PLAN_COMMAND.name}

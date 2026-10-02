@@ -587,6 +587,13 @@ export function OrchestrationPreview({
             : "Checking available harnesses and models…"}
         </p>
       )}
+      {!!proposal.linkedProjects?.length && (
+        <div className="border-t border-stroke px-3 py-2 text-[11px] text-content/45">
+          {proposal.linkedProjects.map(({ name, root }) => (
+            <p key={name} className="truncate" title={root}>{name} · {root}</p>
+          ))}
+        </div>
+      )}
       {!!proposal.tasks.length && (
         <ul className="border-t border-stroke py-1">
           {visible.map((task) => {
@@ -686,6 +693,7 @@ export function OrchestrationPreview({
                         {task.prompt}
                       </p>
                     )}
+                    {task.project && <p>Project · {task.project}</p>}
                     {!!task.dependsOn.length && (
                       <p>
                         After ·{" "}
@@ -776,7 +784,7 @@ export function OrchestrationPreview({
                 : proposal.status === "ready"
                   ? "Awaiting confirmation"
                   : "")}{" "}
-            · Shared project folder
+            · {proposal.linkedProjects?.length ? "Linked projects" : "Shared project folder"}
           </span>
         </div>
       )}

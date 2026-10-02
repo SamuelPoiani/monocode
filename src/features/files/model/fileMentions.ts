@@ -1,4 +1,9 @@
-import { loadProjectFiles, rankProjectFiles, type RankedFile } from "./fileIndex";
+import {
+  loadLinkedProjectFiles,
+  loadProjectFiles,
+  rankProjectFiles,
+  type RankedFile,
+} from "./fileIndex";
 import type { ProjectFile } from "../../../platform/tauri/fs";
 import { isMarkdownBlockquotePosition } from "../../sessions/model/quoteDraft";
 
@@ -45,7 +50,35 @@ const TRAILING_PUNCTUATION = new Set([
 ]);
 const MAX_QUERY = 120;
 const MAX_PICKER = 30;
-const MAX_OUTSIDE_SCOPE = 5;
+/** `api:src/x.ts` names a file of the linked project `api`. */
+const LINKED_PREFIX_RE = /^([a-z0-9_-]+):/;
+
+/** A project linked to an orchestration run, as `@name:path` mentions see it. */
+export type MentionProject = { name: string; root: string };
+type LinkedMentionFile = ProjectFile & { mentionProject?: string };
+
+/** Qualify a linked project's files as `name:relative`, so their labels never
+ * collide with the current project's. */
+export function linkedMentionFiles(
+  name: string,
+  files: ProjectFile[],
+): LinkedMentionFile[] {
+  return withMentionDirectories(files)
+    .filter((file) => isMentionableRelative(file.relative))
+    .map((file) => ({
+      ...file,
+      relative: `${name}:${file.relative}`,
+      mentionProject: name,
+    }));
+}
+
+function linkedProjectOf(relative: string): string | undefined {
+  return LINKED_PREFIX_RE.exec(relative)?.[1];
+}
+
+function mentionProjectOf(file: LinkedMentionFile): string | undefined {
+  return file.mentionProject;
+}
 
 /** Mention token that contains `cursor`, if the user is typing `@file`. */
 export function mentionTokenAt(
@@ -83,6 +116,7 @@ export function buildMentionIndex(files: ProjectFile[]): MentionIndex {
   );
   const counts = new Map<string, number>();
   for (const file of entries) {
+    if (mentionProjectOf(file)) continue;
     counts.set(file.name, (counts.get(file.name) ?? 0) + 1);
   }
 
@@ -99,8 +133,12 @@ export function buildMentionIndex(files: ProjectFile[]): MentionIndex {
   };
 
   for (const file of entries) {
+    // Linked files keep their `name:` prefix, so a bare name stays local.
     const unique =
-      !file.isDir && counts.get(file.name) === 1 && isTokenSafe(file.name);
+      !file.isDir &&
+      counts.get(file.name) === 1 &&
+      isTokenSafe(file.name) &&
+      !mentionProjectOf(file);
     if (unique) claim(file.name, file, true);
     if (isTokenSafe(file.relative)) claim(file.relative, file);
   }
@@ -123,52 +161,52 @@ export function mentionLabel(file: ProjectFile, index: MentionIndex): string {
   return index.labelOf.get(file.path) ?? file.relative;
 }
 
-/** Files the picker offers: recents first without a query, fuzzy after. */
+/** Files the picker offers: recents first without a query, fuzzy after.
+ * Linked projects share the same ranking; `name:` explicitly targets one. */
 export function rankMentionFiles(
   files: ProjectFile[],
   query: string,
   recents: string[],
   limit = MAX_PICKER,
+  linked: { name: string; files: ProjectFile[] }[] = [],
 ): RankedFile[] {
-  return rankUsableMentions(mentionableFiles(files), query, recents, limit);
-}
-
-export type ScopedMentionFiles = {
-  /** Entries inside the scope, or every entry without one. */
-  files: RankedFile[];
-  /** The best matches outside the scope, once something is typed. */
-  outside: RankedFile[];
-};
-
-/**
- * Like `rankMentionFiles`, focused on `scopeDir`, a project-relative folder
- * such as the selected repository of a multi-repo project. Typing still
- * reaches the rest of the project through a few `outside` matches. Labels
- * come from the whole project's mention index either way.
- */
-export function rankScopedMentionFiles(
-  files: ProjectFile[],
-  query: string,
-  recents: string[],
-  scopeDir: string | undefined,
-  limit = MAX_PICKER,
-): ScopedMentionFiles {
-  const usable = mentionableFiles(files);
-  if (!scopeDir) {
-    return { files: rankUsableMentions(usable, query, recents, limit), outside: [] };
-  }
-  const inside: ProjectFile[] = [];
-  const outside: ProjectFile[] = [];
-  for (const file of usable) {
-    (isInsideRelative(file.relative, scopeDir) ? inside : outside).push(file);
-  }
   const needle = mentionNeedle(query);
-  return {
-    files: rankUsableMentions(inside, query, recents, limit),
-    outside: needle
-      ? rankProjectFiles(outside, needle, recents, MAX_OUTSIDE_SCOPE)
-      : [],
-  };
+  const target = linked.find(
+    (project) => project.name === linkedProjectOf(needle),
+  );
+  if (target) {
+    const usable = mentionableFiles(
+      linkedMentionFiles(target.name, target.files),
+    );
+    const relativeQuery = needle.slice(target.name.length + 1);
+    return rankUsableMentions(
+      usable.map((file) => ({
+        ...file,
+        relative: file.relative.slice(target.name.length + 1),
+      })),
+      relativeQuery,
+      recents,
+      limit,
+    ).map((file) => ({
+      ...file,
+      relative: `${target.name}:${file.relative}`,
+      positions: file.positions.map(
+        (position) => position + target.name.length + 1,
+      ),
+    }));
+  }
+  const candidates = needle
+    ? [
+        ...files,
+        ...linked.flatMap(({ name, files }) => linkedMentionFiles(name, files)),
+      ]
+    : files;
+  return rankUsableMentions(
+    mentionableFiles(candidates),
+    query,
+    recents,
+    limit,
+  );
 }
 
 function mentionableFiles(files: ProjectFile[]): ProjectFile[] {
@@ -252,20 +290,42 @@ export function fileMentionsInText(
 /**
  * Spell out where each `@name` lives, so the harness does not have to guess
  * which `App.tsx` the user meant. Tokens already written as a project-relative
- * path need no help.
+ * path need no help. A linked project's file is spelled out with its project
+ * and absolute path, since it lives outside the current checkout.
  */
 export async function applyFileMentionsToTurn(
   text: string,
   cwd: string,
+  linked: MentionProject[] = [],
 ): Promise<string> {
   if (!looksMentioned(text)) return text;
-  const files = await loadProjectFiles(cwd).catch(() => []);
-  if (files.length === 0) return text;
+  const [files, ...linkedFiles] = await Promise.all([
+    loadProjectFiles(cwd).catch((): ProjectFile[] => []),
+    ...linked.map((project) =>
+      text.includes(`@${project.name}:`)
+        ? loadLinkedProjectFiles(project.root).catch((): ProjectFile[] => [])
+        : Promise.resolve([]),
+    ),
+  ]);
+  const all = [
+    ...files,
+    ...linked.flatMap((project, index) =>
+      linkedMentionFiles(project.name, linkedFiles[index] ?? []),
+    ),
+  ];
+  if (all.length === 0) return text;
 
-  const index = buildMentionIndex(files);
+  const index = buildMentionIndex(all);
   const lines = fileMentionsInText(text, index.labels)
-    .filter((hit) => hit.label !== hit.file.relative)
-    .map((hit) => `- @${hit.label} → ${hit.file.relative}`);
+    .filter(
+      (hit) => hit.label !== hit.file.relative || !!mentionProjectOf(hit.file),
+    )
+    .map((hit) => {
+      const project = mentionProjectOf(hit.file);
+      return project
+        ? `- @${hit.label} → ${hit.file.path} (linked project "${project}")`
+        : `- @${hit.label} → ${hit.file.relative}`;
+    });
   if (lines.length === 0) return text;
 
   return [text, "", "---", "Referenced with @ above:", ...lines].join("\n");
@@ -358,10 +418,6 @@ function mentionDirPath(file: ProjectFile, relativeDir: string): string {
     return file.path.slice(0, file.path.length - winTrail.length);
   }
   return file.path.slice(0, file.path.length - trail.length);
-}
-
-function isInsideRelative(relative: string, dir: string): boolean {
-  return relative === dir || relative.startsWith(`${dir}/`);
 }
 
 function pathDepth(relative: string): number {

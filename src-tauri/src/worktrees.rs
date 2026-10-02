@@ -345,7 +345,13 @@ pub async fn git_worktree_create(
 ) -> Result<Worktree, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let project = project.map(|project| expand_home(&project));
-        create(&expand_home(&cwd), &branch, &base, existing, project.as_deref())
+        create(
+            &expand_home(&cwd),
+            &branch,
+            &base,
+            existing,
+            project.as_deref(),
+        )
     })
     .await
     .map_err(|error| error.to_string())?
@@ -980,7 +986,14 @@ mod tests {
     fn lists_repositories_nested_in_a_plain_folder() {
         let repo = repo();
         let plain = repo.0.join("plain");
-        for name in ["web", "Api", "group/mobile", "deep/a/b", ".hidden/c", "node_modules/d"] {
+        for name in [
+            "web",
+            "Api",
+            "group/mobile",
+            "deep/a/b",
+            ".hidden/c",
+            "node_modules/d",
+        ] {
             let dir = plain.join(name);
             std::fs::create_dir_all(&dir).unwrap();
             git_checked(&dir, &["init"]).unwrap();
@@ -988,7 +1001,10 @@ mod tests {
         std::fs::create_dir_all(plain.join("web/packages/inner/.git")).unwrap();
         std::fs::write(plain.join("notes.txt"), "").unwrap();
 
-        assert_eq!(nested_repos(&plain).unwrap(), ["Api", "group/mobile", "web"]);
+        assert_eq!(
+            nested_repos(&plain).unwrap(),
+            ["Api", "group/mobile", "web"]
+        );
         assert_eq!(nested_repos(&repo.0.join("repo")), None);
         assert_eq!(nested_repos(&plain.join("notes.txt")), None);
     }
@@ -1029,7 +1045,9 @@ mod tests {
         );
         assert!(!worker.join("deleted.txt").exists());
         assert_eq!(
-            create_seeded(&root, "mc/orch-testworker", None).unwrap().path,
+            create_seeded(&root, "mc/orch-testworker", None)
+                .unwrap()
+                .path,
             tree.path
         );
 

@@ -16,12 +16,16 @@ Actions, with the JSON object each one takes:
   delegate  {"title":"Short title","harness":"<id from list>",
              "model":"<id from list>","prompt":"Self-contained instructions",
              "files":["src/feature"],"dependsOn":["<taskId>"],
-             "replaces":"<cancelled taskId>"}
+             "project":"<linked name from list>","replaces":"<cancelled taskId>"}
             Queue a worker and return its taskId. "model" is optional and
             defaults to the first model list allows for that harness.
             "files" is the write scope: project-relative paths, where a
             directory covers its descendants and ["."] reserves the whole
-            checkout. "dependsOn" holds taskIds that must be reviewed first.
+            checkout. "project" is optional: use an exact linked name from list;
+            files then refer to that project's root. Omit it for the lead
+            checkout. A task never mixes projects. A plain folder containing
+            several repos requires files inside one nested repo.
+            "dependsOn" holds taskIds that must be reviewed first.
             "replaces" is optional: every task still waiting on that
             cancelled task waits on this one instead.
   get       {"taskId":"..."}

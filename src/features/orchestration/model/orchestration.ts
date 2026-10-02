@@ -13,17 +13,28 @@ import {
 import {
   normalizeOrchestrationRun,
   orchestrationCheckoutCwd,
+  orchestrationTaskRoot,
+  linkedProjectRoot,
   orchestrationWorkspace,
   resolveWorkerBase,
   workerRelativeFiles,
   workspaceIdentity,
+  type LinkedProject,
   type OrchestrationDispatch,
   type OrchestrationRun,
   type OrchestrationTask,
   type OrchestrationWorkspace,
 } from "./orchestrationState";
 
+import {
+  availableOrchestrationProjects,
+  linkedProjectsPrompt,
+  nameLinkedProjects,
+  selectedOrchestrationProjects,
+} from "./orchestrationProjects";
+
 export {
+  orchestrationTaskRoot,
   orchestrationCheckoutCwd,
   orchestrationProjectCwd,
   orchestrationWorkerBaseCwd,
@@ -94,7 +105,7 @@ export type OrchestrationHost = {
 type Storage = {
   save(run: OrchestrationRun): Promise<void>;
   load(id: string): Promise<OrchestrationRun | null>;
-  enable(id: string, cwd: string): Promise<string>;
+  enable(id: string, cwd: string, linkedRoots?: string[]): Promise<string>;
   disable(id: string): Promise<void>;
   scopes(cwd: string, files: string[]): Promise<string[]>;
   resolvePath(path: string): Promise<string>;
@@ -116,7 +127,8 @@ const storage: Storage = {
       throw new Error("Unsupported orchestration history");
     return normalizeOrchestrationRun(run);
   },
-  enable: (sessionId, cwd) => invoke("control_enable", { sessionId, cwd }),
+  enable: (sessionId, cwd, linkedRoots) =>
+    invoke("control_enable", { sessionId, cwd, linkedRoots }),
   disable: (sessionId) => invoke("control_disable", { sessionId }),
   scopes: (cwd, files) => invoke("control_scopes", { cwd, files }),
   resolvePath: (path) => invoke("control_write_path", { path }),
@@ -230,7 +242,11 @@ export function workerTurnPrompt(
   files: string[],
   scratchDir?: string,
   basePrefix?: string,
+  project?: string,
 ): string {
+  const linked = project
+    ? ` Your checkout is an isolated copy of the linked project named ${JSON.stringify(project)}${basePrefix ? `, specifically its nested Git repository at ${JSON.stringify(basePrefix)}` : ""}. Your scope is relative to your own checkout.`
+    : "";
   const nested = basePrefix
     ? ` Your checkout is an isolated copy of the nested Git repository at ${JSON.stringify(basePrefix)} in the project, and your working directory is that repository's root. Paths in the task text that start with ${JSON.stringify(`${basePrefix}/`)} are relative to the project; drop that prefix inside your checkout. Your write scope below is already relative to your checkout.`
     : "";
@@ -238,7 +254,7 @@ export function workerTurnPrompt(
   const scratch = scratchDir
     ? ` Temporary helpers and test output may be written in your private scratch directory: ${JSON.stringify(scratchDir)}. TMPDIR, TMP and TEMP point there. Use this directory for scratch files; do not write elsewhere outside the project. Deliver final changes in your assigned project files.`
     : "";
-  return `${prompt}\n\n<monocode_assignment>\nYou are a worker managed by a MonoCode lead. Work only in the checkout selected for this run.${nested} The workspace, scope and Git rules in this assignment envelope override any contradictory wording in the task text above. Your assigned write scope is: ${files.join(", ")}.${scratch} Read other files as needed, but do not edit outside your scope. If another file or shared operation is needed, report the blocker and stop so the lead can expand or create a new assignment. Do not spawn agents, create worktrees, switch branches, stage, commit, push, install dependencies or run broad formatters/generators. A task owning '.' may run explicitly requested project-wide validation or generation, but Git finalization remains the lead's responsibility after integration. Other workers may be working concurrently in separate checkouts; do not rely on their work until the lead has accepted it. Report focused checks, changed files, remaining issues and a concise final result.\n</monocode_assignment>`;
+  return `${prompt}\n\n<monocode_assignment>\nYou are a worker managed by a MonoCode lead. Work only in the checkout selected for this run.${linked}${nested} The workspace, scope and Git rules in this assignment envelope override any contradictory wording in the task text above. Your assigned write scope is: ${files.join(", ")}.${scratch} Read other files as needed, but do not edit outside your scope. If another file or shared operation is needed, report the blocker and stop so the lead can expand or create a new assignment. Do not spawn agents, create worktrees, switch branches, stage, commit, push, install dependencies or run broad formatters/generators. A task owning '.' may run explicitly requested project-wide validation or generation, but Git finalization remains the lead's responsibility after integration. Other workers may be working concurrently in separate checkouts; do not rely on their work until the lead has accepted it. Report focused checks, changed files, remaining issues and a concise final result.\n</monocode_assignment>`;
 }
 
 /** Task text a person should see: the assignment envelope stays in the send. */
@@ -268,7 +284,7 @@ const FIELDS = new Map<string, string[]>([
   ["list", []],
   [
     "delegate",
-    ["title", "harness", "model", "prompt", "files", "dependsOn", "replaces"],
+    ["title", "harness", "model", "prompt", "files", "project", "dependsOn", "replaces"],
   ],
   ["get", ["taskId"]],
   ["message", ["taskId", "text"]],
@@ -403,6 +419,7 @@ export class Orchestrator {
     leadId: string,
     checkoutCwd?: string,
     multiRepo = this.run(leadId)?.multiRepo,
+    linkedProjects = this.run(leadId)?.linkedProjects,
   ): Session | undefined {
     const lead = this.host?.session(leadId);
     if (!lead) return undefined;
@@ -417,7 +434,10 @@ export class Orchestrator {
         (session) =>
           session.id !== leadId &&
           session.busy &&
-          inRunCheckout(cwd, session.worktreeCwd ?? session.cwd, multiRepo),
+          (inRunCheckout(cwd, session.worktreeCwd ?? session.cwd, multiRepo) ||
+            !!linkedProjects?.some(({ root }) =>
+              scopesOverlap([root], [session.worktreeCwd ?? session.cwd]),
+            )),
       );
   }
   resumeLeadBusy(leadId: string): boolean {
@@ -651,6 +671,35 @@ export class Orchestrator {
       throw error;
     }
   }
+  /** Resolve only explicitly selected, still-imported projects for a new run. */
+  async linkedProjects(leadId: string, checkoutCwd: string): Promise<LinkedProject[]> {
+    const lead = this.host?.session(leadId);
+    if (!lead) throw new Error("The orchestration lead is unavailable");
+    const available = new Set(
+      availableOrchestrationProjects(lead.cwd, checkoutCwd).map(pathKey),
+    );
+    const paths = selectedOrchestrationProjects(leadId).filter((root) =>
+      available.has(pathKey(root)),
+    );
+    if (!paths.length) return [];
+    const roots = await Promise.all(paths.map(async (root) => {
+      const [canonical] = await this.store.scopes(root, ["."]);
+      return this.store.resolvePath(canonical);
+    }));
+    const [checkout, currentProject] = await Promise.all(
+      [checkoutCwd, lead.cwd].map(async (root) => {
+        const [canonical] = await this.store.scopes(root, ["."]);
+        return this.store.resolvePath(canonical);
+      }),
+    );
+    for (const [index, root] of roots.entries()) {
+      if (scopesOverlap([root], [checkout]) ||
+        sameCheckout(root, currentProject) ||
+        roots.slice(0, index).some((other) => scopesOverlap([root], [other])))
+        throw new Error(`Linked project ${root} overlaps the lead checkout, current project or another linked project. Change the Projects selection before planning or starting.`);
+    }
+    return nameLinkedProjects(roots);
+  }
   async start(
     leadId: string,
     allowedHarnesses: HarnessId[],
@@ -659,6 +708,7 @@ export class Orchestrator {
       proposalId: string;
       allowedModels: OrchestrationChoice[];
       tasks: OrchestrationTask[];
+      linkedProjects?: LinkedProject[];
     },
   ) {
     if (this.starting.has(leadId))
@@ -682,6 +732,7 @@ export class Orchestrator {
       proposal.tasks,
       settings,
       proposal.checkoutCwd ?? proposal.cwd,
+      proposal.linkedProjects,
     );
     const lead = this.host?.session(leadId);
     if (
@@ -713,11 +764,15 @@ export class Orchestrator {
       throw new Error(
         "An assigned model is no longer available. Change that assignment before starting.",
       );
+    const linkedProjects = proposal.linkedProjects ?? [];
+    const taskRoot = (task: { project?: string }) => linkedProjectRoot(
+      task.project, linkedProjects, lead.worktreeCwd ?? lead.cwd,
+    );
     const ids = new Map(planned.map((task) => [task.id, crypto.randomUUID()]));
     await Promise.all(
       planned.map((task) =>
         resolveWorkerBase(
-          lead.worktreeCwd ?? lead.cwd,
+          taskRoot(task),
           task.files,
           this.store.repoPrefix,
         ).catch((error) => {
@@ -732,7 +787,7 @@ export class Orchestrator {
         assignmentId: task.id,
         sessionId: crypto.randomUUID(),
         scopes: await this.store.scopes(
-          lead.worktreeCwd ?? lead.cwd,
+          taskRoot(task),
           task.files,
         ),
         dependsOn: task.dependsOn.map((id) => ids.get(id)!),
@@ -756,11 +811,11 @@ export class Orchestrator {
       leadId,
       [...new Set(allowedModels.map((choice) => choice.harness))],
       settings.maxWorkers,
-      { proposalId, allowedModels, tasks },
+      { proposalId, allowedModels, tasks, linkedProjects },
     );
     this.host!.submit(
       leadId,
-      `The user confirmed the orchestration card, including any edits. The app has already queued the exact assignments below; do not delegate duplicates. Supervise them through the control CLI, review their changes, request corrections when needed, and finish the original request.\n\nOriginal request:\n${proposal.request}\n\nApproved assignments:\n${JSON.stringify(tasks.map(({ id, title, prompt, harness, model, modelSettings, files, dependsOn }) => ({ taskId: id, title, prompt, harness, model, modelSettings, files, dependsOn })))}`,
+      `The user confirmed the orchestration card, including any edits. The app has already queued the exact assignments below; do not delegate duplicates. Supervise them through the control CLI, review their changes, request corrections when needed, and finish the original request.\n\nOriginal request:\n${proposal.request}\n\nApproved assignments:\n${JSON.stringify(tasks.map(({ id, title, prompt, harness, model, modelSettings, files, project, dependsOn }) => ({ taskId: id, title, prompt, harness, model, modelSettings, files, project, dependsOn })))}`,
       (outcome) => {
         if (outcome.status !== "completed")
           void this.pause(
@@ -779,6 +834,7 @@ export class Orchestrator {
       proposalId: string;
       allowedModels: OrchestrationChoice[];
       tasks: OrchestrationTask[];
+      linkedProjects?: LinkedProject[];
     },
   ) {
     const lead = this.host?.session(leadId);
@@ -821,12 +877,16 @@ export class Orchestrator {
       throw new Error(
         "Return the lead to its original checkout before resuming orchestration",
       );
+    const linkedProjects = previous?.status === "paused"
+      ? previous.linkedProjects ?? []
+      : approved?.linkedProjects ?? await this.linkedProjects(leadId, workspace.checkoutCwd);
     const multiRepo =
       (await this.store.repoPrefix(workspace.checkoutCwd, ".")) === null;
     const blocker = this.resumeBlocker(
       leadId,
       workspace.checkoutCwd,
       multiRepo,
+      linkedProjects,
     );
     if (blocker) {
       const label = blocker.title.trim() || blocker.id;
@@ -841,7 +901,13 @@ export class Orchestrator {
     const [canonicalRoot] = await this.store.scopes(workspace.checkoutCwd, [
       ".",
     ]);
-    const cli = await this.store.enable(leadId, workspace.checkoutCwd);
+    const cli = linkedProjects.length
+      ? await this.store.enable(
+          leadId,
+          workspace.checkoutCwd,
+          linkedProjects.map(({ root }) => root),
+        )
+      : await this.store.enable(leadId, workspace.checkoutCwd);
     const resumedTasks =
       previous?.status === "paused"
         ? previous.tasks.map((task) =>
@@ -873,6 +939,7 @@ export class Orchestrator {
         workspace,
         canonicalRoot,
         multiRepo: multiRepo || undefined,
+        ...(linkedProjects.length ? { linkedProjects } : {}),
         cli,
         status: "active",
         allowedHarnesses: [...new Set(allowedHarnesses)],
@@ -917,11 +984,13 @@ export class Orchestrator {
       (run) =>
         (run.status === "active" || run.tasks.some(activeTask)) &&
         run.leadId !== id &&
-        inRunCheckout(
+        (inRunCheckout(
           orchestrationCheckoutCwd(run),
           session.worktreeCwd ?? session.cwd,
           run.multiRepo,
-        ),
+        ) || !!run.linkedProjects?.some(({ root }) =>
+          scopesOverlap([root], [session.worktreeCwd ?? session.cwd]),
+        )),
     );
     if (other)
       return "This checkout has an active orchestrator. Stop that run before starting independent work.";
@@ -944,7 +1013,7 @@ export class Orchestrator {
     const validation = run.multiRepo
       ? `This checkout is a plain folder holding several Git repositories, and each worker is isolated in a copy of one of them: every task's files must stay inside a single nested repository (for example ["api/src"]); ["."] and tasks spanning repositories are rejected. For repository-wide validation, generators or broad formatting, assign a separate task whose files are that repository's folder, such as ["api"], and wait for its other workers to finish. Run cross-repository validation yourself after integrating the workers, and perform any authorized Git finalization in each affected repository.`
       : `For project-wide validation, generators or broad formatting, assign a separate task with files ["."] and wait for other workers to finish.`;
-    return `${prompt}\n\n<monocode_orchestration>\nYou are the lead of a local MonoCode run. Coordinate the user's task using ${cli}. Run \`${cli} --help\` before your first command; it documents every action, its exact JSON fields and the retry rule. Credentials are already in your environment; never print them.\nEach call prints one JSON line and exits non-zero unless "ok" is true; read the "error" text, it says what to do next. Unknown JSON fields are rejected rather than ignored, so fix the field name instead of guessing. If a call fails before reaching MonoCode, retry it with the "requestId" from that response so the work is never queued twice.\nUse list to discover allowed harness/model IDs. Delegate bounded tasks with project-relative files (directories reserve their descendants), self-contained prompts and dependsOn task IDs. Use the checkout selected for this run. You may read and plan; leave project file edits to workers. Never start workers outside this CLI. Workers with overlapping files are queued. ${validation} Workers must never commit, push, switch branches or write outside the selected checkout. If the user requested those final operations, review and integrate every worker, call finish, then perform the explicitly authorized finalization yourself from the lead checkout.\nAgents never prompt the user. When one needs an approval or answers a question, list, get and wait report it as needsInput on that task, and you decide with respond or answer; it stays stopped until you do. Judge the request against the task you assigned, and put it to the user in this conversation only when the call is genuinely theirs.\nSteer a running agent with steer to correct its course without losing its work; use message only once it has stopped. Read results with get or wait; completed means a turn finished, not that the work passed review. Review the actual changes, message a worker for fixes, and use review to accept each completed task. A scope-blocked worker is isolated to that task: use message if it should stay within its existing scope, retry with corrected project-relative files if the assignment was too narrow, or cancel it if no longer needed. Never expand scope merely to excuse an unexpected write. Call finish only when required work and combined validation are complete. You receive worker results automatically when idle; use bounded wait calls while supervising. If the run is paused, list/get/wait remain readable and explain the reason. Stop polling, report that reason, and ask the user to click Resume; Resume automatically continues interrupted workers from their retained checkouts. Do not expose credentials, create worktrees, switch branches or silently escalate worker permissions.\n</monocode_orchestration>`;
+    return `${prompt}\n\n<monocode_orchestration>\nYou are the lead of a local MonoCode run. Coordinate the user's task using ${cli}. Run \`${cli} --help\` before your first command; it documents every action, its exact JSON fields and the retry rule. Credentials are already in your environment; never print them.\nEach call prints one JSON line and exits non-zero unless "ok" is true; read the "error" text, it says what to do next. Unknown JSON fields are rejected rather than ignored, so fix the field name instead of guessing. If a call fails before reaching MonoCode, retry it with the "requestId" from that response so the work is never queued twice.\nUse list to discover allowed harness/model IDs. Delegate bounded tasks with project-relative files (directories reserve their descendants), self-contained prompts and dependsOn task IDs. Use the checkout selected for this run. You may read and plan; leave project file edits to workers. Never start workers outside this CLI. Workers with overlapping files are queued. ${run.linkedProjects?.length ? `${linkedProjectsPrompt(run.linkedProjects)} For tasks without project: ` : ""}${validation} Workers must never commit, push, switch branches or write outside the selected checkout. If the user requested those final operations, review and integrate every worker, call finish, then perform the explicitly authorized finalization yourself from ${run.linkedProjects?.length ? "each affected project's working copy" : "the lead checkout"}.\nAgents never prompt the user. When one needs an approval or answers a question, list, get and wait report it as needsInput on that task, and you decide with respond or answer; it stays stopped until you do. Judge the request against the task you assigned, and put it to the user in this conversation only when the call is genuinely theirs.\nSteer a running agent with steer to correct its course without losing its work; use message only once it has stopped. Read results with get or wait; completed means a turn finished, not that the work passed review. Review the actual changes, message a worker for fixes, and use review to accept each completed task. A scope-blocked worker is isolated to that task: use message if it should stay within its existing scope, retry with corrected project-relative files if the assignment was too narrow, or cancel it if no longer needed. Never expand scope merely to excuse an unexpected write. Call finish only when required work and combined validation are complete. You receive worker results automatically when idle; use bounded wait calls while supervising. If the run is paused, list/get/wait remain readable and explain the reason. Stop polling, report that reason, and ask the user to click Resume; Resume automatically continues interrupted workers from their retained checkouts. Do not expose credentials, create worktrees, switch branches or silently escalate worker permissions.\n</monocode_orchestration>`;
   }
   async handle(
     leadId: string,
@@ -1172,6 +1241,10 @@ export class Orchestrator {
           );
         const title = text(input.title, "title", 160);
         const prompt = text(input.prompt, "prompt");
+        const project = input.project === undefined
+          ? undefined
+          : text(input.project, "project", 128);
+        const root = orchestrationTaskRoot(run, { project });
         const files = strings(input.files, "files");
         if (!files.length)
           throw new Error(
@@ -1206,11 +1279,11 @@ export class Orchestrator {
             `Only a cancelled task can be replaced; ${replaced.title} is ${replaced.status}. Correct it with message or retry, or cancel it first.`,
           );
         const scopes = await this.store.scopes(
-          orchestrationCheckoutCwd(run),
+          root,
           files,
         );
         await resolveWorkerBase(
-          orchestrationCheckoutCwd(run),
+          root,
           files,
           this.store.repoPrefix,
         );
@@ -1220,6 +1293,7 @@ export class Orchestrator {
           title,
           prompt,
           files,
+          ...(project === undefined ? {} : { project }),
           scopes,
           dependsOn,
           harness,
@@ -1334,11 +1408,11 @@ export class Orchestrator {
           );
         const current = this.run(run.leadId)!;
         const scopes = await this.store.scopes(
-          orchestrationCheckoutCwd(current),
+          orchestrationTaskRoot(current, target),
           files,
         );
         const { basePrefix } = await resolveWorkerBase(
-          orchestrationCheckoutCwd(current),
+          orchestrationTaskRoot(current, target),
           files,
           this.store.repoPrefix,
         );
@@ -1467,6 +1541,8 @@ export class Orchestrator {
         if (!dispatchId)
           throw new Error("This task has no completed dispatch to review");
         const isolated = target.workspacePolicy !== "shared";
+        if (target.project && !isolated)
+          throw new Error("Linked-project changes can only be reviewed from an isolated worker checkout. The worker was retained.");
         if (!target.accepted) {
           if (isolated) {
             if (!target.workspace)
@@ -1791,6 +1867,7 @@ export class Orchestrator {
               task.files,
               prepared.scratchDir,
               prepared.workspace.basePrefix,
+              task.project,
             );
             this.host.submit(task.sessionId, prompt, (outcome) => {
               void this.settle(run.leadId, task.id, outcome, dispatchId).catch(
@@ -2436,7 +2513,7 @@ export class Orchestrator {
       for (const path of paths) {
         const absolute = /^(?:[\\/]|[a-z]:[\\/])/i.test(path)
           ? path
-          : `${task.workspace?.checkoutCwd ?? orchestrationCheckoutCwd(run)}/${path}`;
+          : `${task.workspace?.checkoutCwd ?? orchestrationTaskRoot(run, task)}/${path}`;
         let resolved: string;
         try {
           resolved = await this.store.resolvePath(absolute);

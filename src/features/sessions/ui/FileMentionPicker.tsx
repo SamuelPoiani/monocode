@@ -1,10 +1,5 @@
 import { StickyNote } from "../../../shared/ui/icons";
-import {
-  Fragment,
-  useEffect,
-  useRef,
-  type MouseEvent as ReactMouseEvent,
-} from "react";
+import { useEffect, useRef, type MouseEvent as ReactMouseEvent } from "react";
 import type { RankedFile } from "../../files/model/fileIndex";
 import { isNoteMentionPath } from "../../notes";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
@@ -13,13 +8,10 @@ import { MatchText } from "../../../shared/ui/MatchText";
 
 type Props = {
   files: RankedFile[];
-  /** Index of the first file outside the focused folder, shown under
-   * `outsideLabel`. */
-  outsideFrom?: number;
-  outsideLabel?: string;
   query: string;
   active: number;
   loading?: boolean;
+  error?: string;
   includeNotes?: boolean;
   onActive: (index: number) => void;
   onPick: (file: RankedFile) => void;
@@ -27,11 +19,10 @@ type Props = {
 
 export function FileMentionPicker({
   files,
-  outsideFrom,
-  outsideLabel,
   query,
   active,
   loading,
+  error,
   includeNotes = false,
   onActive,
   onPick,
@@ -74,7 +65,9 @@ export function FileMentionPicker({
     >
       {files.length === 0 ? (
         <p className="px-3 py-2.5 text-[12px] text-content/50">
-            {loading
+          {error && !loading
+            ? error
+            : loading
               ? "Indexing files…"
               : query.trim()
                 ? includeNotes
@@ -95,84 +88,79 @@ export function FileMentionPicker({
           {files.map((file, index) => {
             const highlighted = index === active;
             const note = isNoteMentionPath(file.path);
-            const slash = file.relative.lastIndexOf("/");
-            const dir = note ? "" : slash === -1 ? "" : file.relative.slice(0, slash);
-            const nameOffset = slash === -1 ? 0 : slash + 1;
+            const nameOffset = Math.max(
+              0,
+              file.relative.length - file.name.length,
+            );
+            const dir = note
+              ? ""
+              : file.relative.slice(0, nameOffset).replace(/\/$/, "");
             const namePositions = note
               ? file.positions
               : file.positions
                   .filter((pos) => pos >= nameOffset)
                   .map((pos) => pos - nameOffset);
-            const outside = outsideFrom != null && index >= outsideFrom;
             return (
-              <Fragment key={file.path}>
-                {index === outsideFrom ? (
-                  <div
-                    role="presentation"
-                    className={`px-2 pb-1 text-[11px] font-medium text-content/40 ${
-                      index > 0 ? "mt-1 border-t border-content/10 pt-2" : "pt-1"
-                    }`}
-                  >
-                    {outsideLabel ?? "Elsewhere in the project"}
-                  </div>
-                ) : null}
-                <button
-                  ref={highlighted ? activeRef : undefined}
-                  type="button"
-                  role="option"
-                  aria-selected={highlighted}
-                  onMouseDown={(e) => e.preventDefault()}
-                  onMouseEnter={() => onRowEnter(index)}
-                  onClick={() => onPick(file)}
-                  className={`flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] leading-none ${
-                    highlighted
-                      ? "bg-selection text-content"
-                      : outside
-                        ? "text-content/60"
-                        : "text-content"
+              <button
+                key={file.path}
+                ref={highlighted ? activeRef : undefined}
+                type="button"
+                role="option"
+                aria-selected={highlighted}
+                onMouseDown={(e) => e.preventDefault()}
+                onMouseEnter={() => onRowEnter(index)}
+                onClick={() => onPick(file)}
+                className={`flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] leading-none ${
+                  highlighted ? "bg-selection text-content" : "text-content"
+                }`}
+              >
+                <span className="shrink-0">
+                  {isNoteMentionPath(file.path) ? (
+                    <StickyNote className="size-3.5" strokeWidth={1.75} />
+                  ) : (
+                    <FileTypeIcon
+                      name={file.name}
+                      isDir={Boolean(file.isDir)}
+                      size={15}
+                    />
+                  )}
+                </span>
+                <span
+                  className={`min-w-0 flex-1 truncate ${
+                    highlighted ? "text-mention" : ""
                   }`}
                 >
-                  <span className="shrink-0">
-                    {isNoteMentionPath(file.path) ? (
-                      <StickyNote className="size-3.5" strokeWidth={1.75} />
-                    ) : (
-                      <FileTypeIcon
-                        name={file.name}
-                        isDir={Boolean(file.isDir)}
-                        size={15}
-                      />
-                    )}
+                  <MatchText
+                    text={file.name}
+                    positions={namePositions}
+                    active={Boolean(query.trim())}
+                  />
+                  {file.isDir ? "/" : null}
+                </span>
+                {note ? (
+                  <span className="shrink-0 font-mono text-[11px] text-content/40">
+                    Note
                   </span>
-                  <span
-                    className={`min-w-0 flex-1 truncate ${
-                      highlighted ? "text-mention" : ""
-                    }`}
-                  >
+                ) : dir ? (
+                  <span className="min-w-0 max-w-[45%] truncate font-mono text-[11px] text-content/40">
                     <MatchText
-                      text={file.name}
-                      positions={namePositions}
+                      text={dir}
+                      positions={file.positions.filter(
+                        (pos) => pos < dir.length,
+                      )}
                       active={Boolean(query.trim())}
                     />
-                    {file.isDir ? "/" : null}
                   </span>
-                  {note ? (
-                    <span className="shrink-0 font-mono text-[11px] text-content/40">
-                      Note
-                    </span>
-                  ) : dir ? (
-                    <span className="min-w-0 max-w-[45%] truncate font-mono text-[11px] text-content/40">
-                      <MatchText
-                        text={dir}
-                        positions={file.positions.filter((pos) => pos < slash)}
-                        active={Boolean(query.trim())}
-                      />
-                    </span>
-                  ) : null}
-                </button>
-              </Fragment>
+                ) : null}
+              </button>
             );
           })}
         </div>
+      )}
+      {files.length > 0 && (loading || error) && (
+        <p className="border-t border-content/10 px-3 py-1.5 text-[11px] text-content/50">
+          {loading ? "Indexing linked projects…" : error}
+        </p>
       )}
     </div>
   );

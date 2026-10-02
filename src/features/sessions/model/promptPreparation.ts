@@ -1,4 +1,7 @@
-import { applyFileMentionsToTurn } from "../../files/model/fileMentions";
+import {
+  applyFileMentionsToTurn,
+  type MentionProject,
+} from "../../files/model/fileMentions";
 import { applyNotesToTurn } from "../../notes";
 import {
   applySkillsToTurn,
@@ -11,11 +14,16 @@ import { nativeCommandPrompt } from "../../../integrations/harness/core/nativeCo
 export async function preparePrompt(
   text: string,
   context: SkillCatalogContext,
+  linkedProjects: MentionProject[] = [],
 ): Promise<string> {
   warmNativeSkills(context);
   if (isNativeCommandPrompt(text, context.harness))
     return nativeCommandPrompt(context.harness, text);
-  const withFiles = await applyFileMentionsToTurn(text, context.cwd);
+  const withFiles = await applyFileMentionsToTurn(
+    text,
+    context.cwd,
+    linkedProjects,
+  );
   const withNotes = await applyNotesToTurn(withFiles);
   return applySkillsToTurn(withNotes, context);
 }

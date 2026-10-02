@@ -26,8 +26,8 @@ export type OrchestrationWorkspace = {
   branch?: string;
   /**
    * Nested repository a worker worktree was seeded from and integrates into,
-   * relative to the run checkout (e.g. "packages/api"). Absent means the run
-   * checkout itself; set when the run checkout is a plain folder holding
+   * relative to the task's project root (e.g. "packages/api"). Absent means
+   * that root itself; set when the task's project is a plain folder holding
    * several repositories.
    */
   basePrefix?: string;
@@ -67,6 +67,11 @@ export type OrchestrationDispatch = {
   cleanupError?: string;
 };
 
+export type LinkedProject = {
+  name: string;
+  root: string;
+};
+
 export type OrchestrationTask = {
   id: string;
   assignmentId?: string;
@@ -77,7 +82,9 @@ export type OrchestrationTask = {
   modelSettings?: Record<string, string>;
   prompt: string;
   files: string[];
-  /** Logical scopes in the lead checkout, used for scheduling overlap. */
+  /** Linked project name; absent means the lead checkout. */
+  project?: string;
+  /** Absolute scopes in the task's project, used for scheduling overlap. */
   scopes: string[];
   /** The same scopes resolved inside this worker's isolated checkout. */
   writeScopes?: string[];
@@ -113,6 +120,8 @@ export type OrchestrationRun = {
    * worker is isolated in the nested repository that owns its files.
    */
   multiRepo?: boolean;
+  /** Explicitly linked working copies, fixed for the lifetime of this run. */
+  linkedProjects?: LinkedProject[];
   status: "active" | "paused" | "stopped" | "finished";
   allowedHarnesses: HarnessId[];
   allowedModels?: OrchestrationChoice[];
@@ -158,14 +167,36 @@ export const orchestrationProjectCwd = (run: OrchestrationRun) =>
 export const orchestrationCheckoutCwd = (run: OrchestrationRun) =>
   orchestrationWorkspace(run).checkoutCwd;
 
+/** Resolve an optional project name without ever falling back to the lead. */
+export function linkedProjectRoot(
+  project: string | undefined,
+  linkedProjects: LinkedProject[] | undefined,
+  checkoutCwd: string,
+): string {
+  if (project === undefined) return checkoutCwd;
+  const linked = linkedProjects?.find((entry) => entry.name === project);
+  if (!linked)
+    throw new Error(
+      `Unknown project ${JSON.stringify(project)}. Linked projects: ${linkedProjects?.map((entry) => entry.name).join(", ") || "none"}. Omit project to use the lead checkout.`,
+    );
+  return linked.root;
+}
+
+/** Working copy owning a task's scopes and integration target. */
+export const orchestrationTaskRoot = (
+  run: OrchestrationRun,
+  task: Pick<OrchestrationTask, "project">,
+) =>
+  linkedProjectRoot(task.project, run.linkedProjects, orchestrationCheckoutCwd(run));
+
 /** Checkout a worker's worktree is seeded from, compared with and merged into. */
 export const orchestrationWorkerBaseCwd = (
   run: OrchestrationRun,
-  task: Pick<OrchestrationTask, "workspace">,
+  task: Pick<OrchestrationTask, "workspace" | "project">,
 ) =>
   task.workspace?.basePrefix
-    ? joinPath(orchestrationCheckoutCwd(run), task.workspace.basePrefix)
-    : orchestrationCheckoutCwd(run);
+    ? joinPath(orchestrationTaskRoot(run, task), task.workspace.basePrefix)
+    : orchestrationTaskRoot(run, task);
 
 /**
  * Pick the repository a worker is isolated in. A run checkout that is itself

@@ -11,6 +11,7 @@ type Props = {
   query: string;
   active: number;
   loading?: boolean;
+  error?: string;
   includeNotes?: boolean;
   onActive: (index: number) => void;
   onPick: (file: RankedFile) => void;
@@ -21,6 +22,7 @@ export function FileMentionPicker({
   query,
   active,
   loading,
+  error,
   includeNotes = false,
   onActive,
   onPick,
@@ -63,7 +65,9 @@ export function FileMentionPicker({
     >
       {files.length === 0 ? (
         <p className="px-3 py-2.5 text-[12px] text-content/50">
-            {loading
+          {error && !loading
+            ? error
+            : loading
               ? "Indexing files…"
               : query.trim()
                 ? includeNotes
@@ -84,9 +88,13 @@ export function FileMentionPicker({
           {files.map((file, index) => {
             const highlighted = index === active;
             const note = isNoteMentionPath(file.path);
-            const slash = file.relative.lastIndexOf("/");
-            const dir = note ? "" : slash === -1 ? "" : file.relative.slice(0, slash);
-            const nameOffset = slash === -1 ? 0 : slash + 1;
+            const nameOffset = Math.max(
+              0,
+              file.relative.length - file.name.length,
+            );
+            const dir = note
+              ? ""
+              : file.relative.slice(0, nameOffset).replace(/\/$/, "");
             const namePositions = note
               ? file.positions
               : file.positions
@@ -137,7 +145,9 @@ export function FileMentionPicker({
                   <span className="min-w-0 max-w-[45%] truncate font-mono text-[11px] text-content/40">
                     <MatchText
                       text={dir}
-                      positions={file.positions.filter((pos) => pos < slash)}
+                      positions={file.positions.filter(
+                        (pos) => pos < dir.length,
+                      )}
                       active={Boolean(query.trim())}
                     />
                   </span>
@@ -146,6 +156,11 @@ export function FileMentionPicker({
             );
           })}
         </div>
+      )}
+      {files.length > 0 && (loading || error) && (
+        <p className="border-t border-content/10 px-3 py-1.5 text-[11px] text-content/50">
+          {loading ? "Indexing linked projects…" : error}
+        </p>
       )}
     </div>
   );

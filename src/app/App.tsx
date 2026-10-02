@@ -24,8 +24,8 @@ import {
 } from "../features/inbox/model/ciRepairTracking";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  orchestrationCheckoutCwd,
   orchestrationProjectCwd,
+  orchestrationTaskRoot,
   orchestrationWorkerBaseCwd,
   orchestrator,
   resolveWorkerBase,
@@ -6396,11 +6396,18 @@ function Workspace({
         void (async () => {
           try {
             const prepared = await prepareAttachments(attachments);
-            const prompt = await preparePrompt(harnessText, {
-              harness: current.harness,
-              sessionId,
-              cwd: initialWorkCwd,
-            });
+            const run = orchestrator.run(sessionId);
+            const prompt = await preparePrompt(
+              harnessText,
+              {
+                harness: current.harness,
+                sessionId,
+                cwd: initialWorkCwd,
+              },
+              run?.status === "active" || run?.status === "paused"
+                ? run.linkedProjects
+                : undefined,
+            );
             await steerHarnessTurn({
               harness: current.harness,
               sessionId,
@@ -6825,15 +6832,17 @@ function Workspace({
         launchTitleGeneration(workCwd);
         if (turnGen.current.get(sessionId) !== gen) return;
         if (proposalDraft && proposalId) {
-          const [settings, repoPrefix] = await Promise.all([
+          const [settings, repoPrefix, linkedProjects] = await Promise.all([
             discoverOrchestrationSettings(),
             gitRepoPrefix(workCwd, "."),
+            orchestrator.linkedProjects(sessionId, workCwd),
           ]);
           if (turnGen.current.get(sessionId) !== gen) return;
           proposalDraft = {
             ...proposalDraft,
             settings,
             multiRepo: repoPrefix === null || undefined,
+            ...(linkedProjects.length ? { linkedProjects } : {}),
           };
           const discovering = proposalDraft;
           setSessions((prev) =>
@@ -7000,14 +7009,24 @@ function Workspace({
         let buildSucceeded = false;
         try {
           const prepared = await prepareAttachments(attachments);
+          const run = orchestrator.run(sessionId);
+          const mentionProjects =
+            proposalDraft?.linkedProjects ??
+            (run?.status === "active" || run?.status === "paused"
+              ? run.linkedProjects
+              : undefined);
           const prompt =
             intent === "build" && approvedPlan
               ? buildPlanPrompt(approvedPlan.text)
-              : await preparePrompt(harnessText, {
-                  harness: current.harness,
-                  sessionId,
-                  cwd: workCwd,
-                });
+              : await preparePrompt(
+                  harnessText,
+                  {
+                    harness: current.harness,
+                    sessionId,
+                    cwd: workCwd,
+                  },
+                  mentionProjects,
+                );
           const turnPrompt = proposalDraft
             ? options?.orchestrationRetry?.response
               ? orchestrationRepairPrompt({
@@ -7020,6 +7039,7 @@ function Workspace({
                   proposalDraft.settings,
                   proposalDraft.checkoutCwd ?? proposalDraft.cwd,
                   proposalDraft.multiRepo,
+                  proposalDraft.linkedProjects,
                 )
             : intent === "plan" && !rawCommand
               ? planTurnPrompt(prompt)
@@ -8950,8 +8970,10 @@ function Workspace({
           models: modelsFor(harness).map(({ id, name }) => ({ id, name })),
         })),
       createWorker: async (run, task) => {
-        const projectCwd = orchestrationProjectCwd(run);
-        const leadCheckoutCwd = orchestrationCheckoutCwd(run);
+        const taskRoot = orchestrationTaskRoot(run, task);
+        const projectCwd = task.project ? taskRoot : orchestrationProjectCwd(run);
+        if (task.project && task.workspacePolicy === "shared")
+          throw new Error("Linked-project workers require an isolated checkout");
         const lead = sessionsRef.current.find(
           (session) => session.id === run.leadId,
         );
@@ -8959,7 +8981,7 @@ function Workspace({
         const workerBaseCwd = orchestrationWorkerBaseCwd(run, task);
         const workspace =
           task.workspacePolicy === "shared"
-            ? workspaceIdentity(projectCwd, leadCheckoutCwd)
+            ? workspaceIdentity(projectCwd, taskRoot)
             : task.workspace
               ? await listWorktrees(workerBaseCwd).then((listed) => {
                   const tree = listed.worktrees.find(
@@ -8982,7 +9004,7 @@ function Workspace({
                   };
                 })
               : await resolveWorkerBase(
-                  leadCheckoutCwd,
+                  taskRoot,
                   task.files,
                   gitRepoPrefix,
                 ).then(async ({ baseCwd, basePrefix }) => {
@@ -8991,7 +9013,7 @@ function Workspace({
                   const tree = await createOrchestrationWorktree(
                     baseCwd,
                     orchestrationWorktreeBranchName(task.id),
-                    basePrefix ? leadCheckoutCwd : undefined,
+                    basePrefix ? taskRoot : undefined,
                   );
                   return {
                     ...workspaceIdentity(
@@ -9234,7 +9256,7 @@ function Workspace({
           if (detached && !detached.worktreeRemoved) {
             const next = detachSessionWorktree(
               detached,
-              orchestrationProjectCwd(run),
+              task.project ? orchestrationTaskRoot(run, task) : orchestrationProjectCwd(run),
               path,
             );
             sessionsRef.current = sessionsRef.current.map((entry) =>

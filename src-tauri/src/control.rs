@@ -19,7 +19,17 @@ struct Grant {
     window: String,
     session: String,
     cwd: String,
+    linked_roots: Vec<String>,
     token: String,
+}
+impl Grant {
+    fn roots(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.cwd.as_str()).chain(self.linked_roots.iter().map(String::as_str))
+    }
+
+    fn overlaps(&self, cwd: &str) -> bool {
+        self.roots().any(|root| paths_overlap(root, cwd))
+    }
 }
 struct Pending {
     window: String,
@@ -63,6 +73,7 @@ impl Inner {
                 window: window.to_string(),
                 session: session.to_string(),
                 cwd: cwd.to_string(),
+                linked_roots: Vec::new(),
                 token,
             },
         );
@@ -124,6 +135,8 @@ pub struct ControlHost {
 }
 
 fn paths_overlap(a: &str, b: &str) -> bool {
+    let a = a.trim_end_matches('/');
+    let b = b.trim_end_matches('/');
     a == b || a.starts_with(&format!("{b}/")) || b.starts_with(&format!("{a}/"))
 }
 
@@ -287,27 +300,43 @@ pub fn control_enable(
     host: State<'_, ControlHost>,
     session_id: String,
     cwd: String,
+    linked_roots: Option<Vec<String>>,
 ) -> Result<String, String> {
     let cwd = std::fs::canonicalize(crate::fs::expand_home(&cwd)).map_err(|e| e.to_string())?;
     if !cwd.is_dir() {
         return Err("Choose a project folder first".into());
     }
     let cwd = comparison_path(&cwd);
+    let mut roots = vec![cwd.clone()];
+    for root in linked_roots.unwrap_or_default() {
+        let canonical = std::fs::canonicalize(crate::fs::expand_home(&root))
+            .map_err(|e| format!("Invalid linked project {root}: {e}"))?;
+        if !canonical.is_dir() {
+            return Err(format!("Linked project {root} must be a directory"));
+        }
+        let canonical = comparison_path(&canonical);
+        if roots.iter().any(|other| paths_overlap(other, &canonical)) {
+            return Err(format!(
+                "Linked project {root} overlaps the lead checkout or another linked project"
+            ));
+        }
+        roots.push(canonical);
+    }
     let mut inner = host
         .inner
         .lock()
         .map_err(|_| "Control service unavailable")?;
-    if let Some((id, _)) = inner
-        .active
-        .iter()
-        .find(|(id, turn)| *id != &session_id && paths_overlap(&turn.cwd, &cwd))
-    {
+    if let Some((id, _)) = inner.active.iter().find(|(id, turn)| {
+        (*id != &session_id || turn.window != window.label())
+            && roots.iter().any(|root| paths_overlap(&turn.cwd, root))
+    }) {
         return Err(format!(
             "Another session ({id}) is running in this checkout. Stop it before enabling orchestration."
         ));
     }
     if inner.grants.values().any(|g| {
-        paths_overlap(&g.cwd, &cwd) && (g.session != session_id || g.window != window.label())
+        roots.iter().any(|root| g.overlaps(root))
+            && (g.session != session_id || g.window != window.label())
     }) {
         return Err("This checkout already has an orchestrator in another session".into());
     }
@@ -320,6 +349,7 @@ pub fn control_enable(
             window: window.label().into(),
             session: session_id.clone(),
             cwd,
+            linked_roots: roots.into_iter().skip(1).collect(),
             token: format!(
                 "{}{}",
                 uuid::Uuid::new_v4().simple(),
@@ -437,11 +467,7 @@ pub fn control_authorize_turn(
         .inner
         .lock()
         .map_err(|_| "Control service unavailable")?;
-    if let Some(lead) = inner
-        .grants
-        .values()
-        .find(|grant| paths_overlap(&grant.cwd, &cwd))
-    {
+    if let Some(lead) = inner.grants.values().find(|grant| grant.overlaps(&cwd)) {
         if lead.window != window.label()
             || (lead.session != session_id && inner.workers.get(&session_id) != Some(&lead.session))
         {
@@ -654,6 +680,7 @@ mod tests {
                 window: "main".into(),
                 session: "ordinary".into(),
                 cwd: "/repo".into(),
+                linked_roots: Vec::new(),
                 token: "app-token".into(),
             },
         );
@@ -698,6 +725,7 @@ mod tests {
                 window: "main".into(),
                 session: "ordinary".into(),
                 cwd: "/repo".into(),
+                linked_roots: Vec::new(),
                 token: "control-token".into(),
             },
         );
@@ -813,6 +841,7 @@ mod tests {
                     window: window.into(),
                     session: id.into(),
                     cwd: format!("/{id}"),
+                    linked_roots: Vec::new(),
                     token: id.into(),
                 },
             );

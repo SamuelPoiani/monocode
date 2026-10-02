@@ -1,9 +1,16 @@
 import { listProjectFiles, type ProjectFile } from "../../../platform/tauri/fs";
 import { subscribeDirsChanged } from "./fileTree";
 import { scorePath, type FuzzyHit } from "../../../shared/lib/fuzzy";
-import { resolveWorkspacePath, slash } from "../../../shared/lib/paths";
+import {
+  pathKey,
+  resolveWorkspacePath,
+  slash,
+} from "../../../shared/lib/paths";
 import { looksLikeProject } from "../../projects/model/recents";
-import { normalizeEditorPath, type FileOpenOptions } from "../../search/model/search";
+import {
+  normalizeEditorPath,
+  type FileOpenOptions,
+} from "../../search/model/search";
 
 const MAX_RECENTS = 30;
 const MAX_RESULTS = 80;
@@ -46,7 +53,17 @@ export function peekProjectFiles(cwd: string): ProjectFile[] | null {
 }
 
 export function invalidateProjectFiles(cwd?: string) {
-  if (cwd && cache?.cwd !== cwd && inflight?.cwd !== cwd) return;
+  const linkedKey = cwd ? pathKey(cwd) : undefined;
+  const hasLinked =
+    linkedKey && (linkedCache.has(linkedKey) || linkedInflight.has(linkedKey));
+  if (cwd && cache?.cwd !== cwd && inflight?.cwd !== cwd && !hasLinked) return;
+  if (linkedKey) {
+    linkedCache.delete(linkedKey);
+    linkedInflight.delete(linkedKey);
+  } else {
+    linkedCache.clear();
+    linkedInflight.clear();
+  }
   if (!cwd || cache?.cwd === cwd) cache = null;
   if (!cwd || inflight?.cwd === cwd) {
     inflight = null;
@@ -133,6 +150,40 @@ export function loadProjectFiles(
       if (inflight?.promise === promise) inflight = null;
     });
   inflight = { cwd, promise };
+  return promise;
+}
+
+/** Indexes of projects linked to an orchestration run, kept beside the
+ * main project's single cached index. */
+const linkedCache = new Map<string, ProjectFile[]>();
+const linkedInflight = new Map<string, Promise<ProjectFile[]>>();
+
+export function peekLinkedProjectFiles(root: string): ProjectFile[] | null {
+  return linkedCache.get(pathKey(root)) ?? null;
+}
+
+export function loadLinkedProjectFiles(
+  root: string,
+  refresh = false,
+): Promise<ProjectFile[]> {
+  if (!looksLikeProject(root)) return Promise.resolve([]);
+  const key = pathKey(root);
+  const cached = linkedCache.get(key);
+  if (!refresh && cached) return Promise.resolve(cached);
+  const pending = linkedInflight.get(key);
+  if (!refresh && pending) return pending;
+  const promise = listProjectFiles(root)
+    .then((files) => {
+      if (linkedInflight.get(key) === promise) {
+        linkedCache.set(key, files);
+        notifyProjectFilesChanged();
+      }
+      return files;
+    })
+    .finally(() => {
+      if (linkedInflight.get(key) === promise) linkedInflight.delete(key);
+    });
+  linkedInflight.set(key, promise);
   return promise;
 }
 
@@ -242,10 +293,7 @@ export async function resolveFileOpenRequest(
 
 function relativePathHint(href: string, cwd: string, direct: string): string {
   let value = href.trim().replace(/\\/g, "/");
-  value = value.replace(
-    /(?::\d+(?::\d+)?|#L\d+(?:-L\d+)?)$/,
-    "",
-  );
+  value = value.replace(/(?::\d+(?::\d+)?|#L\d+(?:-L\d+)?)$/, "");
   if (value.startsWith("file://")) {
     try {
       value = decodeURIComponent(value.slice("file://".length));

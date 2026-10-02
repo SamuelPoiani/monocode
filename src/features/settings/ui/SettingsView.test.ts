@@ -23,6 +23,7 @@ import {
   HARNESSES,
   HARNESS_TITLE,
 } from "../../sessions/model/session";
+import { saveMaskEmails, saveShowRemainingUsage } from "../model/displayPrefs";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async () => undefined),
@@ -114,6 +115,7 @@ afterEach(async () => {
 
 describe("settings pages", () => {
   it("keeps account emails blurred until clicked and hides them when settings reopen", async () => {
+    saveMaskEmails(true);
     vi.mocked(invoke).mockImplementation(async (command, args) => {
       if (command === "provider_account_identity") {
         const { provider } = args as { provider: string };
@@ -149,7 +151,61 @@ describe("settings pages", () => {
     ).toHaveLength(2);
   });
 
+  it("shows used usage and plain emails until the options are turned on", async () => {
+    vi.mocked(invoke).mockImplementation(async (command) =>
+      command === "provider_account_identity"
+        ? { email: "user@example.com", plan: "Pro" }
+        : undefined,
+    );
+    setCachedRateLimits("claude", "default", {
+      provider: "claude",
+      session: {
+        usedPercent: 23,
+        windowMinutes: 300,
+        resetsAt: Date.now() + 3_600_000,
+      },
+      weekly: null,
+      monthly: null,
+      resetCredits: null,
+      updatedAt: Date.now(),
+      error: null,
+      status: "ok",
+    });
+
+    await render("providers");
+
+    const used = container.querySelector('[aria-label="5h limit used"]');
+    expect(used?.getAttribute("aria-valuenow")).toBe("23");
+    expect(used?.querySelector("span")?.getAttribute("style")).toBe(
+      "width: 23%;",
+    );
+    expect(container.textContent).toContain("user@example.com");
+    expect(container.querySelector('[aria-label="Reveal email"]')).toBeNull();
+
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Show remaining usage"]',
+        )!
+        .click(),
+    );
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Mask account emails"]')!
+        .click(),
+    );
+
+    const remaining = container.querySelector(
+      '[aria-label="5h limit remaining"]',
+    );
+    expect(remaining?.getAttribute("aria-valuenow")).toBe("77");
+    expect(
+      container.querySelectorAll('[aria-label="Reveal email"]').length,
+    ).toBeGreaterThan(0);
+  });
+
   it("shows account usage bars as remaining capacity", async () => {
+    saveShowRemainingUsage(true);
     setCachedRateLimits("claude", "default", {
       provider: "claude",
       session: {
@@ -173,19 +229,6 @@ describe("settings pages", () => {
       "width: 77%;",
     );
     expect(bar?.parentElement?.textContent).toContain("77% left");
-
-    const used = container.querySelector<HTMLButtonElement>(
-      '[role="radiogroup"][aria-label="Usage meters"] [role="radio"]:last-child',
-    )!;
-    await act(async () => used.click());
-
-    expect(localStorage.getItem("monocode.usageMeterMode")).toBe("used");
-    const usedBar = container.querySelector('[aria-label="5h limit used"]');
-    expect(usedBar?.getAttribute("aria-valuenow")).toBe("23");
-    expect(usedBar?.querySelector("span")?.getAttribute("style")).toBe(
-      "width: 23%;",
-    );
-    expect(usedBar?.parentElement?.textContent).toContain("23%");
   });
 
   it("shows background effect choices above scope when artwork is available", async () => {

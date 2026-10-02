@@ -1,11 +1,8 @@
 import { useSyncExternalStore } from "react";
 import {
   loadUsageChipWindow,
-  loadUsageMeterMode,
   subscribeUsageChipWindow,
-  subscribeUsageMeterMode,
   type UsageChipWindow,
-  type UsageMeterMode,
 } from "../../settings/model/settings";
 import {
   clampUsedPercent,
@@ -21,6 +18,7 @@ import type {
   AccountUsage,
 } from "../model/accountUsage";
 import { RefreshCw } from "../../../shared/ui/icons";
+import { useShowRemainingUsage } from "../../settings/model/displayPrefs";
 
 const STATUS_DOT: Record<AccountStatusTone, string> = {
   ready: "bg-emerald-400",
@@ -151,10 +149,10 @@ export function UsageMeter({
   now: number;
   className?: string;
 }) {
-  const mode = useUsageMeterMode();
+  const showRemaining = useShowRemainingUsage();
   const pct = clampUsedPercent(window.usedPercent);
   const remaining = 100 - pct;
-  const shown = mode === "remaining" ? remaining : pct;
+  const shown = showRemaining ? remaining : pct;
   const full = pct >= 100 && (window.resetsAt == null || window.resetsAt > now);
   const reset =
     window.resetsAt == null
@@ -178,7 +176,7 @@ export function UsageMeter({
         <span
           className={`shrink-0 tabular-nums ${full ? "font-medium text-red-400" : "text-content/60"}`}
         >
-          {mode === "remaining"
+          {showRemaining
             ? `${formatUsagePercent(remaining)} left`
             : full
               ? "Full"
@@ -188,7 +186,7 @@ export function UsageMeter({
       <div
         className="mt-1.5 h-1 overflow-hidden rounded-full bg-content/10"
         role="progressbar"
-        aria-label={`${title} limit ${mode}`}
+        aria-label={`${title} limit ${showRemaining ? "remaining" : "used"}`}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={Math.round(shown)}
@@ -208,15 +206,6 @@ function MeterSkeleton() {
       <div className="h-3 w-20 rounded bg-content/10" />
       <div className="mt-1.5 h-1 rounded-full bg-content/10" />
     </div>
-  );
-}
-
-/** Live usage meter mode; shared with the footer usage chip. */
-export function useUsageMeterMode(): UsageMeterMode {
-  return useSyncExternalStore(
-    subscribeUsageMeterMode,
-    loadUsageMeterMode,
-    loadUsageMeterMode,
   );
 }
 

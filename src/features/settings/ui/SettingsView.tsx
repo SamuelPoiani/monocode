@@ -227,6 +227,12 @@ import {
 } from "../../providers/model/providerAccountIdentity";
 import { ProviderAccountSubtitle } from "../../providers/ui/ProviderAccountSubtitle";
 import {
+  saveMaskEmails,
+  saveShowRemainingUsage,
+  useMaskEmails,
+  useShowRemainingUsage,
+} from "../model/displayPrefs";
+import {
   accountStatus,
   accountUsageKey,
   useProviderAccountUsage,
@@ -237,7 +243,6 @@ import {
   AccountUsageMeters,
   AccountUsageRefresh,
   useUsageChipWindow,
-  useUsageMeterMode,
 } from "../../providers/ui/ProviderAccountUsage";
 import {
   loadSessionSidebarFilters,
@@ -322,7 +327,6 @@ import {
   type KeybindingOverride,
   saveTabAnimationsEnabled,
   saveUsageChipWindow,
-  saveUsageMeterMode,
   searchSettings,
   settingsSectionDescription,
   settingsSectionLabel,
@@ -3130,8 +3134,6 @@ function ProvidersPage({
     }
   }, [scope, scopeOptions]);
 
-  const usageMeterMode = useUsageMeterMode();
-  const usageChipWindow = useUsageChipWindow();
 
   const onClaudeHooks = (next: boolean) => {
     saveClaudeHooks(next);
@@ -3178,39 +3180,7 @@ function ProvidersPage({
     <>
       <ProviderAccountsSettings />
 
-      <Group title="Usage">
-        <Row
-          id="usage-meters"
-          label="Usage meters"
-          description="Remaining fills each bar with what is left and drains it as you use the limit. Used fills the bar as you spend it."
-        >
-          <Segmented
-            label="Usage meters"
-            value={usageMeterMode}
-            options={[
-              { value: "remaining", label: "Remaining" },
-              { value: "used", label: "Used" },
-            ]}
-            onChange={saveUsageMeterMode}
-          />
-        </Row>
-        <Row
-          id="footer-usage"
-          label="Footer usage"
-          description="Which limit the usage control in the footer shows. Providers without that window keep showing all of theirs. The usage popover always lists every window."
-        >
-          <Segmented
-            label="Footer usage"
-            value={usageChipWindow}
-            options={[
-              { value: "all", label: "Both" },
-              { value: "session", label: "5-hour" },
-              { value: "weekly", label: "Weekly" },
-            ]}
-            onChange={saveUsageChipWindow}
-          />
-        </Row>
-      </Group>
+      <UsageDisplaySettings />
 
       <Group
         id="agent-clis"
@@ -3284,6 +3254,54 @@ function ProvidersPage({
         </Row>
       </Group>
     </>
+  );
+}
+
+function UsageDisplaySettings() {
+  const showRemainingUsage = useShowRemainingUsage();
+  const maskEmails = useMaskEmails();
+  const usageChipWindow = useUsageChipWindow();
+  return (
+    <Group title="Usage and privacy">
+      <Row
+        id="show-remaining-usage"
+        label="Show remaining usage"
+        description="Fill usage meters with what is left in each limit instead of what has been used."
+      >
+        <Toggle
+          label="Show remaining usage"
+          on={showRemainingUsage}
+          onChange={saveShowRemainingUsage}
+        />
+      </Row>
+      <Row
+        id="footer-usage"
+        label="Footer usage"
+        description="Which limit the usage control in the footer shows. Providers without that window keep showing all of theirs. The usage popover always lists every window."
+      >
+        <Segmented
+          label="Footer usage"
+          value={usageChipWindow}
+          options={[
+            { value: "all", label: "Both" },
+            { value: "session", label: "5-hour" },
+            { value: "weekly", label: "Weekly" },
+          ]}
+          onChange={saveUsageChipWindow}
+        />
+      </Row>
+      <Row
+        id="mask-emails"
+        label="Mask account emails"
+        description="Blur account emails in Settings and the usage popover until you click one, so they stay out of screenshots."
+      >
+        <Toggle
+          label="Mask account emails"
+          on={maskEmails}
+          onChange={saveMaskEmails}
+        />
+      </Row>
+    </Group>
   );
 }
 

@@ -21,8 +21,11 @@ export type Worktree = {
 };
 export type Worktrees = { worktrees: Worktree[]; defaultRoot: string };
 
-export const listWorktrees = (cwd: string) =>
-  invokeWorkspace<Worktrees>("git_worktrees", { cwd });
+export const listWorktrees = (cwd: string, project?: string) =>
+  invokeWorkspace<Worktrees>("git_worktrees", {
+    cwd,
+    ...(project ? { project } : {}),
+  });
 
 export async function createWorktree(
   cwd: string,
@@ -30,12 +33,14 @@ export async function createWorktree(
   base: string,
   existing: boolean,
   project = cwd,
+  nestedProject?: string,
 ) {
   const tree = await invoke<Worktree>("git_worktree_create", {
     cwd,
     branch,
     base,
     existing,
+    ...(nestedProject ? { project: nestedProject } : {}),
   });
   notifyGitChanged();
   await notifyWorktreeActions(project, tree.path);

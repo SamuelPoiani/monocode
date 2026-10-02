@@ -126,10 +126,15 @@ fn default_root(main: &Path) -> PathBuf {
 }
 
 #[tauri::command(async)]
-pub fn git_worktrees(cwd: String, store: State<'_, SessionStore>) -> Result<Worktrees, String> {
+pub fn git_worktrees(
+    cwd: String,
+    project: Option<String>,
+    store: State<'_, SessionStore>,
+) -> Result<Worktrees, String> {
     let mut worktrees = list(&expand_home(&cwd))?;
     let main = worktrees.first().ok_or("No working copies found")?;
-    let default_root = path_to_js(&default_root(Path::new(&main.path)));
+    let project = project.map(|project| expand_home(&project));
+    let default_root = path_to_js(&worktree_parent(Path::new(&main.path), project.as_deref()));
     {
         let conn = store.lock_conn()?;
         for tree in &mut worktrees {
@@ -336,9 +341,11 @@ pub async fn git_worktree_create(
     branch: String,
     base: String,
     existing: bool,
+    project: Option<String>,
 ) -> Result<Worktree, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        create(&expand_home(&cwd), &branch, &base, existing, None)
+        let project = project.map(|project| expand_home(&project));
+        create(&expand_home(&cwd), &branch, &base, existing, project.as_deref())
     })
     .await
     .map_err(|error| error.to_string())?

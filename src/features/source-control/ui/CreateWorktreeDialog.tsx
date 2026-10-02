@@ -11,12 +11,14 @@ export function CreateWorktreeDialog({
   cwd,
   baseCwd,
   defaultRoot,
+  nestedProject,
   onCreated,
   onCancel,
 }: {
   cwd: string;
   baseCwd: string;
   defaultRoot?: string;
+  nestedProject?: string;
   onCreated: (tree: Worktree) => void | Promise<void>;
   onCancel: () => void;
 }) {
@@ -61,7 +63,16 @@ export function CreateWorktreeDialog({
     setBusy(true);
     setError(undefined);
     try {
-      const tree = await createWorktree(baseCwd, name.trim(), base, existing, cwd);
+      const tree = await (nestedProject
+        ? createWorktree(
+            baseCwd,
+            name.trim(),
+            base,
+            existing,
+            nestedProject,
+            nestedProject,
+          )
+        : createWorktree(baseCwd, name.trim(), base, existing, cwd));
       await onCreated(tree);
     } catch (err) {
       setError(String(err));

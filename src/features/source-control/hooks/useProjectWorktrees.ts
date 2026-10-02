@@ -6,6 +6,7 @@ import { listWorktrees, type Worktrees } from "../model/worktrees";
 type Snapshot = { data?: Worktrees; error?: string };
 type Entry = {
   cwd: string;
+  project?: string;
   snapshot: Snapshot;
   listeners: Set<() => void>;
   inFlight?: Promise<boolean>;
@@ -46,7 +47,9 @@ function load(entry: Entry, invalidated = false): Promise<boolean> {
   entry.inFlight = (async () => {
     let loaded = false;
     try {
-      const data = await listWorktrees(entry.cwd);
+      const data = await (entry.project
+        ? listWorktrees(entry.cwd, entry.project)
+        : listWorktrees(entry.cwd));
       publish(entry, { data });
       loaded = true;
     } catch (error) {
@@ -64,8 +67,8 @@ function load(entry: Entry, invalidated = false): Promise<boolean> {
   return entry.inFlight;
 }
 
-function start(entry: Entry) {
-  void load(entry);
+function start(entry: Entry, invalidated = false) {
+  void load(entry, invalidated);
   const resume = () => {
     if (!document.hidden) void load(entry);
   };
@@ -83,14 +86,22 @@ function start(entry: Entry) {
 
 /** Share cached working copies between settings and composers. Revalidation
  * never clears the last successful result, including across unmounts. */
-export function useProjectWorktrees(cwd: string, enabled = true) {
+export function useProjectWorktrees(
+  cwd: string,
+  enabled = true,
+  project?: string,
+) {
   const active = enabled && !!cwd && cwd !== "~";
   const subscribe = useCallback(
     (listener: () => void) => {
       if (!active) return () => {};
       const entry = entryFor(cwd);
+      // Revalidate when a shared cwd is opened with a different project root.
+      const projectChanged = project !== entry.project;
+      if (projectChanged) entry.project = project;
       entry.listeners.add(listener);
-      if (entry.listeners.size === 1) start(entry);
+      if (entry.listeners.size === 1) start(entry, projectChanged);
+      else if (projectChanged) void load(entry, true);
       return () => {
         entry.listeners.delete(listener);
         if (entry.listeners.size === 0) {
@@ -99,7 +110,7 @@ export function useProjectWorktrees(cwd: string, enabled = true) {
         }
       };
     },
-    [active, cwd],
+    [active, cwd, project],
   );
   const getSnapshot = useCallback(
     () => (active ? entryFor(cwd).snapshot : EMPTY),

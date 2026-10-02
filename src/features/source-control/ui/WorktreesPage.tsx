@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CreateWorktreeDialog } from "./CreateWorktreeDialog";
 import { DeleteWorktreeDialog } from "./DeleteWorktreeDialog";
 import { SearchableProjectPicker } from "../../projects/ui/SearchableProjectPicker";
@@ -13,7 +13,9 @@ import {
 } from "../../../shared/ui/icons";
 import { revealPath } from "../../../platform/tauri/fs";
 import { useProjectWorktrees } from "../hooks/useProjectWorktrees";
-import { isEqualOrInside, pathKey, prettyCwd, projectName } from "../../../shared/lib/paths";
+import { useNestedGitRepos } from "../hooks/useNestedGitRepos";
+import { SearchableSelect } from "../../../shared/ui/SearchableSelect";
+import { isEqualOrInside, joinPath, pathKey, prettyCwd, projectName } from "../../../shared/lib/paths";
 import { loadArchivedProjects, type RecentProject } from "../../projects/model/recents";
 import type { Session } from "../../sessions/model/session";
 import {
@@ -58,12 +60,28 @@ export function WorktreesPage({
   const [project, setProject] = useState(
     cwd === "~" ? (projects[0]?.path ?? "") : cwd,
   );
-  const { data, error: loadError, refresh } = useProjectWorktrees(project);
+  const { repos, selected, select, scanned } = useNestedGitRepos(
+    project,
+    undefined,
+    true,
+  );
+  const nestedProject = repos?.length ? project : undefined;
+  const repoCwd = nestedProject && selected ? joinPath(project, selected) : project;
+  const { data, error: loadError, refresh } = useProjectWorktrees(
+    repoCwd,
+    scanned && repos?.length !== 0,
+    nestedProject,
+  );
   const worktrees = data?.worktrees.filter((tree) => !tree.isMain) ?? [];
   const [error, setError] = useState<string>();
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState<Worktree>();
   const [refreshingAfterFailure, setRefreshingAfterFailure] = useState(false);
+  useEffect(() => {
+    setError(undefined);
+    setCreating(false);
+    setDeleting(undefined);
+  }, [repoCwd]);
   return (
     <div
       data-setting-id="project-worktrees"
@@ -82,6 +100,18 @@ export function WorktreesPage({
             setDeleting(undefined);
           }}
         />
+        {!!repos?.length && selected && (
+          <SearchableSelect
+            label="Repository"
+            value={selected}
+            options={repos.map((repo) => ({ value: repo, label: repo }))}
+            onChange={select}
+            searchPlaceholder="Search repositories…"
+            emptyLabel="No matching repositories"
+            searchable={repos.length > 8}
+            variant="pill"
+          />
+        )}
         <button
           type="button"
           disabled={!data}
@@ -106,7 +136,7 @@ export function WorktreesPage({
               : "Refresh worktrees"
           }
           aria-label="Refresh worktrees"
-          disabled={!project}
+          disabled={!project || !scanned || repos?.length === 0}
           onClick={refresh}
           className={`flex h-7 shrink-0 items-center gap-1.5 rounded-md bg-content/8 px-2 text-[11px] hover:bg-content/12 disabled:opacity-40 active:scale-[0.97] ${loadError ? "text-red-400" : "text-content/65"}`}
         >
@@ -123,11 +153,15 @@ export function WorktreesPage({
         <p className="text-[12px] text-content/50">
           Add a project to manage its worktrees.
         </p>
-      ) : !data && loadError ? (
+      ) : scanned && repos?.length === 0 ? (
+        <p className="text-[12px] text-content/50">
+          This project folder has no Git repositories.
+        </p>
+      ) : scanned && !data && loadError ? (
         <p role="alert" className="break-words text-[12px] text-red-400">
           {loadError}
         </p>
-      ) : !data ? (
+      ) : !scanned || !data ? (
         <p className="flex items-center gap-2 text-[12px] text-content/50">
           <Loader className="size-4 animate-spin" />
           Loading worktrees…
@@ -157,7 +191,7 @@ export function WorktreesPage({
                     <span className="text-[13px] font-medium">
                       {projectName(tree.path)}
                     </span>
-                    {pathKey(tree.path) === pathKey(project) && (
+                    {pathKey(tree.path) === pathKey(repoCwd) && (
                       <span className="text-[10px] text-content/40">
                         Selected project folder
                       </span>
@@ -233,8 +267,9 @@ export function WorktreesPage({
       )}
       {creating && (
         <CreateWorktreeDialog
-          cwd={project}
-          baseCwd={project}
+          cwd={repoCwd}
+          baseCwd={repoCwd}
+          nestedProject={nestedProject}
           defaultRoot={data?.defaultRoot}
           onCreated={() => {
             setCreating(false);
@@ -245,7 +280,7 @@ export function WorktreesPage({
       )}
       {deleting && (
         <DeleteWorktreeDialog
-          cwd={project}
+          cwd={repoCwd}
           tree={deleting}
           sessionCount={worktreeSessionIds(deleting, liveSessions).length}
           onRemove={async (cwd, path, force, deleteSessions) => {
@@ -286,7 +321,7 @@ export function WorktreesPage({
           }}
           onClose={() => setDeleting(undefined)}
           onDeleted={() => {
-            if (isEqualOrInside(project, deleting.path)) {
+            if (isEqualOrInside(repoCwd, deleting.path)) {
               const main = data?.worktrees.find((tree) => tree.isMain);
               if (main) setProject(main.path);
             }

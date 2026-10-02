@@ -2,6 +2,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { pathKey } from "../../../shared/lib/paths";
 
 const KEY = "monocode.nestedChangesRepo.v1";
+const listeners = new Set<() => void>();
+
+export function subscribeNestedChangesRepo(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
 
 type StoredRepos = Record<string, string>;
 
@@ -34,6 +42,7 @@ function writeAll(repos: StoredRepos): void {
   } catch {
     // private mode / quota
   }
+  for (const listener of listeners) listener();
 }
 
 /** The nested repository whose changes a plain folder last showed. */

@@ -17,7 +17,7 @@ import {
 } from "../../projects/model/recents";
 
 const EMPTY_PROJECTS: MentionProject[] = [];
-const EMPTY_FILES: { name: string; files: ProjectFile[] }[] = [];
+const EMPTY_FILES: { name: string; root: string; files: ProjectFile[] }[] = [];
 
 /** Use the same canonical names as planning, and the fixed names of a live run. */
 export function useLinkedMentionProjects(input: {
@@ -101,6 +101,7 @@ export function useLinkedMentionProjects(input: {
     () =>
       projects.map(({ name, root }) => ({
         name,
+        root,
         files: peekLinkedProjectFiles(root) ?? [],
       })),
     [projects],
@@ -112,6 +113,7 @@ export function useLinkedMentionProjects(input: {
     const readFiles = () =>
       projects.map(({ name, root }) => ({
         name,
+        root,
         files: peekLinkedProjectFiles(root) ?? [],
       }));
     setIndexed({

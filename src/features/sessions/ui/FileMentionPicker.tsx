@@ -1,6 +1,7 @@
-import { StickyNote } from "../../../shared/ui/icons";
+import { FolderTree, StickyNote } from "../../../shared/ui/icons";
 import { useEffect, useRef, type MouseEvent as ReactMouseEvent } from "react";
 import type { RankedFile } from "../../files/model/fileIndex";
+import { isLinkedProjectRoot } from "../../files/model/fileMentions";
 import { isNoteMentionPath } from "../../notes";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
@@ -88,18 +89,22 @@ export function FileMentionPicker({
           {files.map((file, index) => {
             const highlighted = index === active;
             const note = isNoteMentionPath(file.path);
+            // `name:` — a linked project as a whole, labelled by its name.
+            const project = isLinkedProjectRoot(file);
             const nameOffset = Math.max(
               0,
               file.relative.length - file.name.length,
             );
-            const dir = note
-              ? ""
-              : file.relative.slice(0, nameOffset).replace(/\/$/, "");
-            const namePositions = note
-              ? file.positions
-              : file.positions
-                  .filter((pos) => pos >= nameOffset)
-                  .map((pos) => pos - nameOffset);
+            const dir =
+              note || project
+                ? ""
+                : file.relative.slice(0, nameOffset).replace(/\/$/, "");
+            const namePositions =
+              note || project
+                ? file.positions
+                : file.positions
+                    .filter((pos) => pos >= nameOffset)
+                    .map((pos) => pos - nameOffset);
             return (
               <button
                 key={file.path}
@@ -117,6 +122,8 @@ export function FileMentionPicker({
                 <span className="shrink-0">
                   {isNoteMentionPath(file.path) ? (
                     <StickyNote className="size-3.5" strokeWidth={1.75} />
+                  ) : project ? (
+                    <FolderTree className="size-3.5" strokeWidth={1.75} />
                   ) : (
                     <FileTypeIcon
                       name={file.name}
@@ -135,11 +142,15 @@ export function FileMentionPicker({
                     positions={namePositions}
                     active={Boolean(query.trim())}
                   />
-                  {file.isDir ? "/" : null}
+                  {project ? ":" : file.isDir ? "/" : null}
                 </span>
                 {note ? (
                   <span className="shrink-0 font-mono text-[11px] text-content/40">
                     Note
+                  </span>
+                ) : project ? (
+                  <span className="shrink-0 font-mono text-[11px] text-content/40">
+                    Linked project
                   </span>
                 ) : dir ? (
                   <span className="min-w-0 max-w-[45%] truncate font-mono text-[11px] text-content/40">

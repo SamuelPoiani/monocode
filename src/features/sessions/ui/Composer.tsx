@@ -822,8 +822,8 @@ export function Composer({
     () => [
       ...files,
       ...(notesEnabled ? notesAsProjectFiles(notes) : []),
-      ...linkedMentions.files.flatMap(({ name, files }) =>
-        linkedMentionFiles(name, files),
+      ...linkedMentions.files.flatMap(({ name, root, files }) =>
+        linkedMentionFiles(name, files, root),
       ),
     ],
     [files, linkedMentions.files, notes, notesEnabled],

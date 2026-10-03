@@ -55,21 +55,61 @@ const LINKED_PREFIX_RE = /^([a-z0-9_-]+):/;
 
 /** A project linked to an orchestration run, as `@name:path` mentions see it. */
 export type MentionProject = { name: string; root: string };
-type LinkedMentionFile = ProjectFile & { mentionProject?: string };
+type LinkedMentionFile = ProjectFile & {
+  mentionProject?: string;
+  mentionProjectRoot?: boolean;
+};
 
 /** Qualify a linked project's files as `name:relative`, so their labels never
- * collide with the current project's. */
+ * collide with the current project's. With `root`, `@name:` also names the
+ * whole project. */
 export function linkedMentionFiles(
   name: string,
   files: ProjectFile[],
+  root?: string,
 ): LinkedMentionFile[] {
-  return withMentionDirectories(files)
+  const qualified = withMentionDirectories(files)
     .filter((file) => isMentionableRelative(file.relative))
     .map((file) => ({
       ...file,
       relative: `${name}:${file.relative}`,
       mentionProject: name,
     }));
+  return root ? [linkedProjectRootFile(name, root), ...qualified] : qualified;
+}
+
+/** The `@name:` entry that points at a linked project as a whole. */
+function linkedProjectRootFile(name: string, root: string): LinkedMentionFile {
+  return {
+    name,
+    path: root,
+    relative: `${name}:`,
+    isDir: true,
+    mentionProject: name,
+    mentionProjectRoot: true,
+  };
+}
+
+export function isLinkedProjectRoot(file: ProjectFile): boolean {
+  return !!(file as LinkedMentionFile).mentionProjectRoot;
+}
+
+/** Linked projects whose `name:` starts with what the user typed. */
+function rankLinkedRoots(
+  linked: { name: string; root?: string }[],
+  needle: string,
+): RankedFile[] {
+  const typed = needle.toLowerCase();
+  return linked.flatMap(({ name, root }) => {
+    if (!root || !`${name}:`.startsWith(typed)) return [];
+    return [
+      {
+        ...linkedProjectRootFile(name, root),
+        score: 0,
+        positions: Array.from({ length: typed.length }, (_, i) => i),
+      },
+    ];
+  });
 }
 
 function linkedProjectOf(relative: string): string | undefined {
@@ -168,7 +208,7 @@ export function rankMentionFiles(
   query: string,
   recents: string[],
   limit = MAX_PICKER,
-  linked: { name: string; files: ProjectFile[] }[] = [],
+  linked: { name: string; root?: string; files: ProjectFile[] }[] = [],
 ): RankedFile[] {
   const needle = mentionNeedle(query);
   const target = linked.find(
@@ -179,7 +219,8 @@ export function rankMentionFiles(
       linkedMentionFiles(target.name, target.files),
     );
     const relativeQuery = needle.slice(target.name.length + 1);
-    return rankUsableMentions(
+    const roots = relativeQuery ? [] : rankLinkedRoots([target], needle);
+    const inside = rankUsableMentions(
       usable.map((file) => ({
         ...file,
         relative: file.relative.slice(target.name.length + 1),
@@ -194,19 +235,23 @@ export function rankMentionFiles(
         (position) => position + target.name.length + 1,
       ),
     }));
+    return [...roots, ...inside].slice(0, limit);
   }
+  // Linked projects themselves lead the list; they are few and easy to miss.
+  const roots = rankLinkedRoots(linked, needle);
   const candidates = needle
     ? [
         ...files,
         ...linked.flatMap(({ name, files }) => linkedMentionFiles(name, files)),
       ]
     : files;
-  return rankUsableMentions(
+  const ranked = rankUsableMentions(
     mentionableFiles(candidates),
     query,
     recents,
     limit,
   );
+  return [...roots, ...ranked].slice(0, limit);
 }
 
 function mentionableFiles(files: ProjectFile[]): ProjectFile[] {
@@ -310,7 +355,7 @@ export async function applyFileMentionsToTurn(
   const all = [
     ...files,
     ...linked.flatMap((project, index) =>
-      linkedMentionFiles(project.name, linkedFiles[index] ?? []),
+      linkedMentionFiles(project.name, linkedFiles[index] ?? [], project.root),
     ),
   ];
   if (all.length === 0) return text;
@@ -322,6 +367,9 @@ export async function applyFileMentionsToTurn(
     )
     .map((hit) => {
       const project = mentionProjectOf(hit.file);
+      if (project && isLinkedProjectRoot(hit.file)) {
+        return `- @${hit.label} → ${hit.file.path} (the whole linked project "${project}", its root directory)`;
+      }
       return project
         ? `- @${hit.label} → ${hit.file.path} (linked project "${project}")`
         : `- @${hit.label} → ${hit.file.relative}`;

@@ -5534,10 +5534,14 @@ function Workspace({
     // the last one selected ends up focused.
     const picked = await pickFolders();
     // A plain folder holding several repositories is offered as one project
-    // per repository; the user picks which, or keeps the folder whole.
+    // per repository; the user picks which, or keeps the folder whole. Every
+    // folder is scanned up front so later prompts don't wait on their scan.
+    const scans = await Promise.all(
+      picked.map((path) => nestedGitRepos(path).catch(() => null)),
+    );
     const paths: string[] = [];
-    for (const path of picked) {
-      const repos = await nestedGitRepos(path).catch(() => null);
+    for (const [index, path] of picked.entries()) {
+      const repos = scans[index];
       if (!repos?.length) {
         paths.push(path);
         continue;

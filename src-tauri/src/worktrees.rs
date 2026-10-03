@@ -201,8 +201,12 @@ const NESTED_REPO_LIMIT: usize = 100;
 /// Repositories inside a plain folder, as `/`-separated paths relative to
 /// it, found at most two levels down without descending into a repository.
 /// `None` when `root` is itself inside a repository or is not a folder.
+///
+/// Containment is read from the disk rather than asked of `git`: this runs as
+/// the folder picker closes, while the regained window focus sets every panel
+/// refreshing, and a process spawned then waits its turn behind theirs.
 fn nested_repos(root: &Path) -> Option<Vec<String>> {
-    if !root.is_dir() || git(root, &["rev-parse", "--show-toplevel"]).is_ok() {
+    if !root.is_dir() || root.ancestors().any(|dir| dir.join(".git").exists()) {
         return None;
     }
     let mut found = Vec::new();

@@ -86,6 +86,11 @@ import {
   type SessionDeleteChoice,
 } from "../features/sessions/ui/DeleteSessionDialog";
 import {
+  ImportNestedReposDialog,
+  type NestedReposChoice,
+} from "../features/projects/ui/ImportNestedReposDialog";
+import { nestedGitRepos } from "../features/source-control/model/nestedRepos";
+import {
   type WorktreeFocus,
   useWorktreeFocus,
   worktreeFocus,
@@ -949,6 +954,10 @@ function Workspace({
       ? rememberProject(resumed.projectCwd)
       : loadRecents(),
   );
+  const knownProjectKeys = useMemo(
+    () => new Set(recents.map((project) => pathKey(project.path))),
+    [recents],
+  );
   const [seed] = useState(() => {
     const cwd = lastProjectPath() ?? "~";
     const session = newDefaultSession(cwd);
@@ -962,6 +971,11 @@ function Workspace({
     title: string;
     unusedWorktree: string;
     resolve: (choice: SessionDeleteChoice) => void;
+  }>();
+  const [nestedReposDialog, setNestedReposDialog] = useState<{
+    root: string;
+    repos: string[];
+    resolve: (choice: NestedReposChoice) => void;
   }>();
   const switchingWorktrees = useRef(new Map<string, string>());
   const removingWorktreePaths = useRef(new Set<string>());
@@ -5518,7 +5532,23 @@ function Workspace({
   const pickProject = useCallback(async () => {
     // Several folders can be taken at once; each opens as its own project, and
     // the last one selected ends up focused.
-    openProjects(await pickFolders());
+    const picked = await pickFolders();
+    // A plain folder holding several repositories is offered as one project
+    // per repository; the user picks which, or keeps the folder whole.
+    const paths: string[] = [];
+    for (const path of picked) {
+      const repos = await nestedGitRepos(path).catch(() => null);
+      if (!repos?.length) {
+        paths.push(path);
+        continue;
+      }
+      const choice = await new Promise<NestedReposChoice>((resolve) =>
+        setNestedReposDialog({ root: path, repos, resolve }),
+      );
+      if (choice.kind === "folder") paths.push(path);
+      else if (choice.kind === "repos") paths.push(...choice.paths);
+    }
+    openProjects(paths);
   }, [openProjects]);
 
   const onPlaceSessionInFolder = useCallback(
@@ -11417,6 +11447,18 @@ function Workspace({
               onClose={(choice) => {
                 sessionDeleteDialog.resolve(choice);
                 setSessionDeleteDialog(undefined);
+              }}
+            />
+          )}
+          {nestedReposDialog && (
+            <ImportNestedReposDialog
+              key={nestedReposDialog.root}
+              root={nestedReposDialog.root}
+              repos={nestedReposDialog.repos}
+              known={knownProjectKeys}
+              onClose={(choice) => {
+                nestedReposDialog.resolve(choice);
+                setNestedReposDialog(undefined);
               }}
             />
           )}

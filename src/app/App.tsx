@@ -39,6 +39,7 @@ import { isHarnessAvailable } from "../integrations/harness/core/availability";
 import {
   completeOrchestrationProposal,
   completeOrRepairOrchestrationProposal,
+  isDirectOrchestrationAnswer,
   orchestrationPlanningPrompt,
   orchestrationRepairPrompt,
   proposalBlock,
@@ -7251,8 +7252,31 @@ function Workspace({
               const providerFailed =
                 providerFailureSeen ||
                 isProviderFailureText(lastAssistantTextInTurn(stopped));
-              const finalized =
-                proposalDraft && proposalId
+              const proposalResponse = nativeProposalText || proposalText;
+              // The lead answered without proposing workers: show the reply as
+              // a normal message instead of a failed assignment card.
+              const directAnswer =
+                !!proposalDraft &&
+                !!proposalId &&
+                !providerFailed &&
+                buildSucceeded &&
+                completedProposal?.status !== "ready" &&
+                isDirectOrchestrationAnswer(proposalResponse);
+              const finalized = directAnswer
+                ? {
+                    ...stopped,
+                    blocks: [
+                      ...stopped.blocks.filter(
+                        (block) => block.id !== proposalId,
+                      ),
+                      {
+                        id: proposalId!,
+                        role: "assistant" as const,
+                        text: (proposalText || proposalResponse).trim(),
+                      },
+                    ],
+                  }
+                : proposalDraft && proposalId
                   ? withOrchestrationProposal(
                       stopped,
                       proposalId,

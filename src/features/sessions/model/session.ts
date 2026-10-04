@@ -192,6 +192,8 @@ export type ToolPreview = {
   query?: string;
   lines?: ToolPreviewLine[];
   output?: string;
+  /** Folder a shell command ran in, when the harness reports it. */
+  cwd?: string;
 };
 
 /** One thing a subagent did, mirrored into the parent transcript. */

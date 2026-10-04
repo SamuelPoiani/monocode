@@ -521,7 +521,25 @@ describe("mapCodexNotification", () => {
         kind: "shell",
         path: "/Users/me/project/src/lib/orchestration.ts",
         fileName: "orchestration.ts",
+        cwd: "/Users/me/project",
       },
+    });
+  });
+
+  it("keeps the folder a plain command ran in", () => {
+    const mapped = mapCodexNotification("item/started", {
+      item: {
+        id: "cmd_test",
+        type: "commandExecution",
+        command: `/bin/zsh -lc "npm test"`,
+        cwd: "/Users/me/api",
+        status: "inProgress",
+        commandActions: [{ type: "unknown", command: "npm test" }],
+      },
+    });
+    expect(mapped.events[0]).toMatchObject({
+      type: "tool.started",
+      preview: { kind: "shell", cwd: "/Users/me/api" },
     });
   });
 

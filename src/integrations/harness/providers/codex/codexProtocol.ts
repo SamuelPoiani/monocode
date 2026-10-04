@@ -834,8 +834,21 @@ function mapToolItem(
   return null;
 }
 
-/** Prefer Codex's own best-effort command parsing, then our legacy fallback. */
+/** Prefer Codex's own best-effort command parsing, then our legacy fallback.
+ * The preview keeps the folder the command ran in, so the transcript can tell
+ * a command in a linked project from one in the current checkout. */
 export function codexCommandPresentation(
+  item: Record<string, unknown>,
+  command: string,
+): { title: string; preview?: ToolPreview } {
+  const presentation = commandPresentation(item, command);
+  const cwd = stringField(item, "cwd");
+  return cwd && presentation.preview
+    ? { ...presentation, preview: { ...presentation.preview, cwd } }
+    : presentation;
+}
+
+function commandPresentation(
   item: Record<string, unknown>,
   command: string,
 ): { title: string; preview?: ToolPreview } {

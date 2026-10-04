@@ -791,3 +791,53 @@ describe("worker assignment prompts", () => {
     expect(markup).not.toContain("You are a worker managed by a MonoCode lead");
   });
 });
+
+describe("AgentTranscript linked project labels", () => {
+  const linkedProjects = [{ name: "api", root: "/work/api" }];
+  const renderLive = (call: Block) =>
+    renderToStaticMarkup(
+      createElement(AgentTranscript, {
+        blocks: [{ id: "user", role: "user", text: "Check the backend" }, call],
+        busy: true,
+        cwd: "/work/web",
+        linkedProjects,
+      }),
+    );
+
+  it("labels a read in a linked project and shows its path from that root", () => {
+    const markup = renderLive({
+      id: "read",
+      role: "tool",
+      text: "Read",
+      tool: {
+        kind: "read",
+        status: "completed",
+        preview: {
+          kind: "read",
+          path: "/work/api/src/routes.ts",
+          fileName: "routes.ts",
+        },
+      },
+    });
+    expect(markup).toContain('title="In linked project api"');
+    expect(markup).toContain("src/routes.ts");
+    expect(markup).not.toContain("/work/api/src/routes.ts");
+  });
+
+  it("labels a command by the folder it ran in", () => {
+    const command = (cwd: string): Block => ({
+      id: "test",
+      role: "tool",
+      text: "npm test",
+      tool: {
+        kind: "execute",
+        status: "completed",
+        preview: { kind: "shell", title: "npm test", cwd },
+      },
+    });
+    expect(renderLive(command("/work/api"))).toContain(
+      'title="In linked project api"',
+    );
+    expect(renderLive(command("/work/web"))).not.toContain("In linked project");
+  });
+});

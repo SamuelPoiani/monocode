@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Tool rows in the transcript are labelled with the linked project they worked in, and show its paths from that project's root, so a read, edit, or command in the wrong project stands out. Reads and edits are matched by the file they touched; Codex commands are also matched by the folder they ran in.
+
 ### Changed
 
 - Linked projects work in every local session, not only in orchestrator mode. Pick them from the composer's **Projects** menu, which shows the `@name:` of each project, and reference their files with `@name:path` to ask about another project, such as the backend while working in the frontend. The first reference in a conversation explains where the project lives and that its commands run from its own root; later references add only a short reminder. Orchestration runs still use the same selection to assign workers.

@@ -264,12 +264,14 @@ export function orchestrationPlanningPrompt(
     : 'Assign project-wide generation or final combined validation to a task with files ["."].';
   return [
     "Prepare an orchestration proposal for the user to review in MonoCode. Investigate and plan only: do not edit files, start workers, or invoke the MonoCode control CLI. No execution is authorized until the user confirms the assignment card.",
-    "You are the orchestrator: the user selected you in the composer model picker. Decide the task breakdown and choose each worker's harness and model from the available catalog below. Do not ask the user to assemble a team. They can change your choices in the card before confirming.",
-    "Keep planning efficient: inspect only what is needed to understand the request and relevant project conventions. Use the fewest useful tasks, with clear deliverables and acceptance checks. Do not create agents for trivial steps or duplicate investigation. Prefer a fast, economical model for straightforward work and a more capable model when complexity warrants it; do not invent model capabilities or prices. Reuse a suitable harness/model across tasks when that is sufficient. Explain your overall division of work briefly in the summary.",
+    "First decide whether the request benefits from delegation at all. The presence of worker capabilities does not create an obligation to use them. For simple tasks that only require reading or investigating the project, use your own tools. This includes conversational questions, explanations, listing directories, searching the project, reading files, inspecting code, answering questions about the repository, and other straightforward investigation. In those cases, answer directly in prose and do not emit <monocode_proposal>. Do not create a worker merely to perform one or a few tool calls that you could perform yourself.",
+    "Propose worker assignments whenever the request requires changing files, since you cannot edit during planning. For small or tightly scoped edits, propose a single task on a fast, economical model instead of splitting the work. Use multiple workers only when delegation provides a meaningful benefit, such as independent or parallel workstreams, substantial work spanning distinct areas of the project, useful context isolation, specialist expertise or independent review.",
+    "You are the orchestrator: the user selected you in the composer model picker. When delegation is warranted, decide the task breakdown and choose each worker's harness and model from the available catalog below. Do not ask the user to assemble a team. They can change your choices in the card before confirming.",
+    "Keep planning efficient: inspect only what is needed to understand the request and relevant project conventions. Use the fewest useful tasks, with clear deliverables and acceptance checks. Do not create agents for trivial steps, investigation the lead can efficiently perform itself, or duplicate investigation. Prefer a fast, economical model for straightforward delegated work and a more capable model when complexity warrants it; do not invent model capabilities or prices. Reuse a suitable harness/model across tasks when that is sufficient. Explain your overall division of work briefly in the summary.",
     `Use only exact harness/model pairs from the catalog. Give each task self-contained instructions and project-relative write scopes; directories own their descendants. Parallelize independent work with disjoint files. Serialize shared-file edits with dependencies and avoid concurrent repository-wide commands. ${linkedProjects?.length ? "For tasks without project: " : ""}${validation} Workers must not commit, push, switch branches, or write outside the selected checkout. If the user requested Git or cross-checkout finalization, do not create a worker for it: the lead performs only those explicitly authorized final operations after every worker is reviewed, integrated, and the orchestration run is finished. All workers use app-managed isolated checkouts; do not ask them to create or switch worktrees.`,
     `The exact checkout root is ${JSON.stringify(cwd)}. Every files entry must be ${multiRepo ? "" : '"." or '}a path relative to ${linkedProjects?.length ? "this root when project is omitted, or the named linked project root when project is set" : "this root"}. For example, a discovered absolute path beneath this root must be returned without the root prefix. Never use an absolute path or '..'.`,
     ...(linkedProjects?.length ? [linkedProjectsPrompt(linkedProjects)] : []),
-    "Return your final proposal as one JSON object inside <monocode_proposal>...</monocode_proposal>. The app renders it as an editable card, so do not ask for approval in prose. No Markdown inside the JSON fields. Tasks may reference any task ID; the graph must be acyclic.",
+    "When you do propose assignments, return your final proposal as one JSON object inside <monocode_proposal>...</monocode_proposal>. The app renders it as an editable card, so do not ask for approval in prose. No Markdown inside the JSON fields. Tasks may reference any task ID; the graph must be acyclic.",
     'Schema: {"title":"Short project title","summary":"What you will do and how the work fits together","tasks":[{"id":"task-1","title":"Short task title","prompt":"Self-contained instructions, constraints and checks","harness":"exact harness ID","model":"exact model ID","files":["src/feature"],"dependsOn":[]}]}',
     ...(linkedProjects?.length ? ['Optional task field: "project":"exact linked project name".'] : []),
     `Parallel worker limit: ${settings.maxWorkers}`,
@@ -334,6 +336,18 @@ export function orchestrationRepairPrompt(
   ].join("\n\n");
 }
 
+/**
+ * The lead answered in prose instead of proposing assignments: no proposal
+ * tag and nothing shaped like a task list.
+ */
+export function isDirectOrchestrationAnswer(response: string): boolean {
+  return (
+    !!response.trim() &&
+    !/<monocode_proposal>/.test(response) &&
+    !/"tasks"\s*:/.test(response)
+  );
+}
+
 /** At most one corrective turn; provider failures and cancellation never loop. */
 export async function completeOrRepairOrchestrationProposal(
   draft: OrchestrationProposal,
@@ -342,7 +356,12 @@ export async function completeOrRepairOrchestrationProposal(
   canRepair: () => boolean,
 ): Promise<OrchestrationProposal> {
   const first = completeOrchestrationProposal(draft, response);
-  if (first.status !== "invalid" || !canRepair()) return first;
+  if (
+    first.status !== "invalid" ||
+    !canRepair() ||
+    isDirectOrchestrationAnswer(response)
+  )
+    return first;
   const corrected = await repair(orchestrationRepairPrompt(first));
   return completeOrchestrationProposal(draft, corrected);
 }

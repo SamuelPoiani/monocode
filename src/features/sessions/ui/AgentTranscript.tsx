@@ -17,9 +17,11 @@ import {
   X,
 } from "../../../shared/ui/icons";
 import {
+  createContext,
   memo,
   startTransition,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -61,6 +63,7 @@ import {
 } from "../../../integrations/harness/core/preview";
 import { copyMessage } from "../../../platform/tauri/clipboard";
 import type { Attachment } from "../model/session";
+import type { MentionProject } from "../../files/model/fileMentions";
 import { visibleUserPrompt } from "../../orchestration/model/orchestration";
 import { playCue } from "../../settings/model/sounds";
 import { legacyTaskListFromText } from "../model/taskList";
@@ -115,6 +118,7 @@ import {
   subagentReport,
   toolCallLabel,
   toolCallState,
+  toolLinkedProject,
   turnCopyText,
   workKind,
   workSummaryLine,
@@ -203,7 +207,13 @@ type Props = {
   onScrollerChange?: (el: HTMLDivElement | null) => void;
   /** A worker's transcript: show the orchestrator's turns instead of hiding them. */
   managed?: boolean;
+  /** Projects linked to this session; tool rows that worked in one are labelled. */
+  linkedProjects?: readonly MentionProject[];
 };
+
+const NO_LINKED_PROJECTS: readonly MentionProject[] = [];
+const LinkedProjectsContext =
+  createContext<readonly MentionProject[]>(NO_LINKED_PROJECTS);
 
 function AgentTranscriptComponent({
   blocks: sourceBlocks,
@@ -239,6 +249,7 @@ function AgentTranscriptComponent({
   parked = false,
   onScrollerChange,
   managed = false,
+  linkedProjects = NO_LINKED_PROJECTS,
 }: Props) {
   const blocks = useMemo(() => {
     if (!harness || !supportsHarnessLogin(harness)) return sourceBlocks;
@@ -646,7 +657,7 @@ function AgentTranscriptComponent({
     };
   }, [visible, searchQuery, searchCurrent, visibleTurnCount, openWork]);
 
-  return (
+  const transcript = (
     <div
       ref={setScroller}
       className="agent-transcript h-full overflow-y-auto overscroll-none [overflow-anchor:none] font-mono text-[13px] leading-5"
@@ -984,6 +995,11 @@ function AgentTranscriptComponent({
         />
       ) : null}
     </div>
+  );
+  return (
+    <LinkedProjectsContext.Provider value={linkedProjects}>
+      {transcript}
+    </LinkedProjectsContext.Provider>
   );
 }
 
@@ -3090,13 +3106,15 @@ function ActivityToolRow({
   onOpenDiff?: (path: string) => void;
 }) {
   const [errorOpen, setErrorOpen] = useState(false);
+  const linked = toolLinkedProject(block, useContext(LinkedProjectsContext));
   const appCall = monoCodeToolCall(block);
   if (appCall) {
     return (
       <MonoCodeCallRow block={block} call={appCall} onApproval={onApproval} />
     );
   }
-  const label = toolCallLabel(block, cwd);
+  const rowCwd = linked?.cwd ?? cwd;
+  const label = toolCallLabel(block, rowCwd);
   const state = toolCallState(block);
   const pending = needsApproval(block);
   const errorDetail =
@@ -3105,7 +3123,8 @@ function ActivityToolRow({
     <ToolCallSummary
       label={label}
       preview={block.tool?.preview}
-      cwd={cwd}
+      cwd={rowCwd}
+      project={linked?.project.name}
       chip={bare}
       failed={state === "rejected"}
       status={state}
@@ -3355,8 +3374,11 @@ function ToolCall({
   embedded?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const linked = toolLinkedProject(block, useContext(LinkedProjectsContext));
+  const rowCwd = linked?.cwd ?? cwd;
+  const project = linked?.project.name;
   const preview = block.tool?.preview;
-  const label = toolCallLabel(block, cwd);
+  const label = toolCallLabel(block, rowCwd);
   const detail = block.tool?.detail?.trim();
   const expanded = detail && detail !== label ? detail : label;
   const state = toolCallState(block);
@@ -3394,7 +3416,7 @@ function ToolCall({
           <FilePreview
             preview={preview ?? stubFilePreview(block.tool?.kind, label)}
             status={state}
-            cwd={cwd}
+            cwd={rowCwd}
             onOpenFile={onOpenDiff ?? onOpenFile}
           />
         ) : (
@@ -3403,7 +3425,8 @@ function ToolCall({
             <ToolCallSummary
               label={label}
               preview={preview}
-              cwd={cwd}
+              cwd={rowCwd}
+              project={project}
               failed={state === "rejected"}
               status={state}
               onOpenFile={onOpenFile}
@@ -3432,7 +3455,8 @@ function ToolCall({
           <ToolCallSummary
             label={label}
             preview={preview}
-            cwd={cwd}
+            cwd={rowCwd}
+            project={project}
             failed={state === "rejected"}
             onOpenFile={onOpenFile}
           />
@@ -3450,7 +3474,8 @@ function ToolCall({
           <ToolCallSummary
             label={label}
             preview={preview}
-            cwd={cwd}
+            cwd={rowCwd}
+            project={project}
             failed={state === "rejected"}
             onOpenFile={onOpenFile}
           />
@@ -3470,6 +3495,7 @@ function ToolCallSummary({
   label,
   preview,
   cwd,
+  project,
   onOpenFile,
   onOpenDiff,
   interactive = true,
@@ -3480,6 +3506,8 @@ function ToolCallSummary({
   label: string;
   preview?: ToolPreview;
   cwd?: string;
+  /** Linked project the call worked in; absent for the current project. */
+  project?: string;
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
   interactive?: boolean;
@@ -3491,7 +3519,7 @@ function ToolCallSummary({
   const { action, target, fileName, filePath, isFile, previewMatchesFile } =
     resolveToolCallDisplay(label, preview, cwd);
   if (!action || !target) {
-    return (
+    const text = (
       <span
         className={`min-w-0 flex-1 truncate font-mono text-[13px] ${
           failed ? "text-red-400" : chip ? "text-content/65" : "text-content/80"
@@ -3500,6 +3528,14 @@ function ToolCallSummary({
       >
         {label}
       </span>
+    );
+    return project ? (
+      <span className="flex min-w-0 flex-1 items-center gap-1.5">
+        <ToolProjectLabel name={project} />
+        {text}
+      </span>
+    ) : (
+      text
     );
   }
   const openFile =
@@ -3525,6 +3561,7 @@ function ToolCallSummary({
       <span className={`shrink-0 font-sans text-sm ${actionTone}`}>
         {action}
       </span>
+      {project ? <ToolProjectLabel name={project} /> : null}
       {isFile ? (
         canPreview ? (
           <ToolDiffPreview
@@ -3581,6 +3618,18 @@ function ToolCallSummary({
           <span className="min-w-0 truncate">{target}</span>
         </span>
       )}
+    </span>
+  );
+}
+
+/** Sets off a call made in a linked project, so work in the wrong one stands out. */
+function ToolProjectLabel({ name }: { name: string }) {
+  return (
+    <span
+      title={`In linked project ${name}`}
+      className="shrink-0 rounded bg-content/10 px-1 font-sans text-[11px] font-medium text-content/65"
+    >
+      {name}
     </span>
   );
 }

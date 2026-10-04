@@ -21,13 +21,13 @@ const EMPTY_FILES: { name: string; root: string; files: ProjectFile[] }[] = [];
 /** Opening the picker again within this window reuses the last index. */
 const LINKED_INDEX_MAX_AGE_MS = 10_000;
 
-/** Use the same canonical names as planning, and the fixed names of a live run.
- * Outside orchestration the session's linked projects are plain references. */
-export function useLinkedMentionProjects(input: {
+/** A session's linked projects, with the same canonical names as planning and
+ * the fixed names of a live run. Outside orchestration they are plain
+ * references. */
+export function useLinkedProjects(input: {
   sessionId?: string;
   checkoutCwd: string;
   enabled: boolean;
-  pickerOpen: boolean;
 }) {
   const paths = useSyncExternalStore(subscribeOrchestrationProjects, () =>
     selectedOrchestrationProjects(input.sessionId ?? ""),
@@ -93,6 +93,24 @@ export function useLinkedMentionProjects(input: {
       (paths.length && resolved.key === key
         ? resolved.projects
         : EMPTY_PROJECTS));
+  const resolving =
+    enabled && !fixed && paths.length > 0 && resolved.key !== key;
+  return {
+    projects,
+    resolving,
+    error:
+      enabled && resolved.key === key && !fixed ? resolved.error : undefined,
+  };
+}
+
+/** Linked projects and their file indexes, for `@name:` mentions. */
+export function useLinkedMentionProjects(input: {
+  sessionId?: string;
+  checkoutCwd: string;
+  enabled: boolean;
+  pickerOpen: boolean;
+}) {
+  const { projects, resolving, error } = useLinkedProjects(input);
   const filesKey = JSON.stringify(projects);
   const [indexed, setIndexed] = useState<{
     key: string;
@@ -160,8 +178,6 @@ export function useLinkedMentionProjects(input: {
     };
   }, [filesKey, input.pickerOpen, projects]);
 
-  const resolving =
-    enabled && !fixed && paths.length > 0 && resolved.key !== key;
   return {
     files: !projects.length
       ? EMPTY_FILES
@@ -171,11 +187,8 @@ export function useLinkedMentionProjects(input: {
     loading:
       resolving ||
       (projects.length > 0 && (indexed.key !== filesKey || indexed.loading)),
-    error: enabled
-      ? ((resolved.key === key && !fixed ? resolved.error : undefined) ??
-        (projects.length && indexed.key === filesKey
-          ? indexed.error
-          : undefined))
-      : undefined,
+    error:
+      error ??
+      (projects.length && indexed.key === filesKey ? indexed.error : undefined),
   };
 }

@@ -10,9 +10,11 @@ import {
 import { leafName } from "../../files/model/fileName";
 import {
   displayPath,
+  isEqualOrInside,
   pathKey,
   resolveWorkspacePath,
 } from "../../../shared/lib/paths";
+import type { MentionProject } from "../../files/model/fileMentions";
 import { INTERRUPT_MESSAGE } from "./inFlight";
 import type { Block, ToolPreview } from "./session";
 import { allModels } from "./models";
@@ -78,6 +80,26 @@ export function toolCallLabel(block: Block, cwd?: string): string {
       cwd,
     }) || "Working"
   );
+}
+
+/**
+ * The linked project a tool call worked in: the one holding the file it
+ * touched, or else the folder its command ran in. Paths outside every linked
+ * root, relative ones included, stay with the current project. `cwd` is what
+ * the row's paths read against.
+ */
+export function toolLinkedProject(
+  block: Block,
+  linked: readonly MentionProject[],
+): { project: MentionProject; cwd: string } | undefined {
+  const preview = block.tool?.preview;
+  if (!linked.length || !preview) return undefined;
+  const holding = (path: string) =>
+    linked.find(({ root }) => isEqualOrInside(path, root));
+  const byPath = preview.path ? holding(preview.path) : undefined;
+  if (byPath) return { project: byPath, cwd: byPath.root };
+  const byCwd = preview.cwd ? holding(preview.cwd) : undefined;
+  return byCwd && preview.cwd ? { project: byCwd, cwd: preview.cwd } : undefined;
 }
 
 export function isIncompleteTool(

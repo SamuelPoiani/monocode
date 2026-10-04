@@ -99,6 +99,7 @@ import type { SessionFolderTarget } from "../model/sessionFolders";
 import { markLinkedSessionUpdateSeen } from "../../inbox/model/linkedSessionSeen";
 import { RemoteSession } from "../../connections/ui/RemoteSession";
 import { isRemoteProjectPath } from "../../projects/model/recents";
+import { useLinkedProjects } from "./useLinkedMentionProjects";
 import type { HostSession } from "../../connections/model/protocol";
 
 export type SessionPaneProps = {
@@ -563,6 +564,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
     return () => window.removeEventListener(ADD_TO_CHAT_EVENT, onAdd);
   }, [addSelectionToChat, addToChatTarget]);
   const workCwd = sessionWorkCwd(session);
+  const { projects: linkedProjects } = useLinkedProjects({
+    sessionId: session.id,
+    checkoutCwd: workCwd,
+    enabled: !remote,
+  });
   const showDeckProjectPicker = isEmpty && !looksLikeProject(session.cwd);
   const dockComposer =
     remoteSessionLoading ||
@@ -854,6 +860,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                   busy={!!session.busy}
                   visible={visible}
                   cwd={workCwd}
+                  linkedProjects={linkedProjects}
                   harness={session.harness}
                   model={session.model}
                   modelSettings={session.modelSettings}

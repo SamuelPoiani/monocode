@@ -22,6 +22,7 @@ import {
   subagentFailureSummary,
   subagentName,
   toolCallLabel,
+  toolLinkedProject,
   turnCopyText,
   subagentModelName,
   workKind,
@@ -1531,5 +1532,50 @@ describe("subagent model labels", () => {
     expect(subagentModelName(row("custom-model-v2"))).toBe("custom-model-v2");
     for (const model of [undefined, "", "auto", "inherit", "default"])
       expect(subagentModelName(row(model))).toBeUndefined();
+  });
+});
+
+describe("toolLinkedProject", () => {
+  const api = { name: "api", root: "/work/api" };
+  const call = (preview: NonNullable<Block["tool"]>["preview"]): Block => ({
+    id: "call",
+    role: "tool",
+    text: "Read",
+    tool: { kind: "read", status: "completed", preview },
+  });
+
+  it("finds the linked project holding the file a call touched", () => {
+    expect(
+      toolLinkedProject(
+        call({ kind: "read", path: "/work/api/src/routes.ts" }),
+        [api],
+      ),
+    ).toEqual({ project: api, cwd: "/work/api" });
+  });
+
+  it("falls back to the folder a command ran in", () => {
+    expect(
+      toolLinkedProject(
+        call({ kind: "shell", title: "npm test", cwd: "/work/api/server" }),
+        [api],
+      ),
+    ).toEqual({ project: api, cwd: "/work/api/server" });
+  });
+
+  it("leaves current-project and relative paths unlabelled", () => {
+    expect(
+      toolLinkedProject(
+        call({ kind: "read", path: "/work/web/src/App.tsx", cwd: "/work/web" }),
+        [api],
+      ),
+    ).toBeUndefined();
+    expect(
+      toolLinkedProject(call({ kind: "read", path: "src/routes.ts" }), [api]),
+    ).toBeUndefined();
+    expect(
+      toolLinkedProject(call({ kind: "read", path: "/work/api-old/x.ts" }), [
+        api,
+      ]),
+    ).toBeUndefined();
   });
 });

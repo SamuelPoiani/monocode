@@ -18,8 +18,11 @@ import {
 
 const EMPTY_PROJECTS: MentionProject[] = [];
 const EMPTY_FILES: { name: string; root: string; files: ProjectFile[] }[] = [];
+/** Opening the picker again within this window reuses the last index. */
+const LINKED_INDEX_MAX_AGE_MS = 10_000;
 
-/** Use the same canonical names as planning, and the fixed names of a live run. */
+/** Use the same canonical names as planning, and the fixed names of a live run.
+ * Outside orchestration the session's linked projects are plain references. */
 export function useLinkedMentionProjects(input: {
   sessionId?: string;
   checkoutCwd: string;
@@ -119,7 +122,9 @@ export function useLinkedMentionProjects(input: {
     setIndexed({
       key: filesKey,
       files: readFiles(),
-      loading: input.pickerOpen,
+      loading:
+        input.pickerOpen &&
+        projects.some(({ root }) => peekLinkedProjectFiles(root) == null),
     });
     const stop = subscribeProjectFiles(() => {
       if (!cancelled)
@@ -131,7 +136,9 @@ export function useLinkedMentionProjects(input: {
     });
     if (input.pickerOpen) {
       void Promise.allSettled(
-        projects.map(({ root }) => loadLinkedProjectFiles(root, true)),
+        projects.map(({ root }) =>
+          loadLinkedProjectFiles(root, LINKED_INDEX_MAX_AGE_MS),
+        ),
       ).then((results) => {
         if (cancelled) return;
         const failed = results.flatMap((result, index) =>

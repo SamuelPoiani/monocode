@@ -153,29 +153,40 @@ export function loadProjectFiles(
   return promise;
 }
 
-/** Indexes of projects linked to an orchestration run, kept beside the
- * main project's single cached index. */
-const linkedCache = new Map<string, ProjectFile[]>();
+/** Indexes of linked projects, kept beside the main project's single cached
+ * index. Only the most recently used few stay in memory. */
+const MAX_LINKED_INDEXES = 8;
+const linkedCache = new Map<string, { files: ProjectFile[]; at: number }>();
 const linkedInflight = new Map<string, Promise<ProjectFile[]>>();
 
 export function peekLinkedProjectFiles(root: string): ProjectFile[] | null {
-  return linkedCache.get(pathKey(root)) ?? null;
+  return linkedCache.get(pathKey(root))?.files ?? null;
 }
 
+/** Reuse an index younger than `maxAgeMs`; `0` always walks the project again. */
 export function loadLinkedProjectFiles(
   root: string,
-  refresh = false,
+  maxAgeMs = Infinity,
 ): Promise<ProjectFile[]> {
   if (!looksLikeProject(root)) return Promise.resolve([]);
   const key = pathKey(root);
   const cached = linkedCache.get(key);
-  if (!refresh && cached) return Promise.resolve(cached);
+  if (cached && Date.now() - cached.at < maxAgeMs) {
+    linkedCache.delete(key);
+    linkedCache.set(key, cached);
+    return Promise.resolve(cached.files);
+  }
   const pending = linkedInflight.get(key);
-  if (!refresh && pending) return pending;
+  if (pending) return pending;
   const promise = listProjectFiles(root)
     .then((files) => {
       if (linkedInflight.get(key) === promise) {
-        linkedCache.set(key, files);
+        linkedCache.delete(key);
+        linkedCache.set(key, { files, at: Date.now() });
+        for (const oldest of linkedCache.keys()) {
+          if (linkedCache.size <= MAX_LINKED_INDEXES) break;
+          linkedCache.delete(oldest);
+        }
         notifyProjectFilesChanged();
       }
       return files;

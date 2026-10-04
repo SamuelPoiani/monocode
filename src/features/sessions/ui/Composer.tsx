@@ -807,7 +807,6 @@ export function Composer({
     // The indent can rewrap the first line after the input already resized.
     if (ref.current) resizeComposer(ref.current);
   }, [modeIndent]);
-  // A leading mode command also makes linked-project references available.
   const orchestrationActive =
     orchestratorMode || leadingMode?.name === ORCHESTRATOR_COMMAND.name;
   const orchestratorRunActive =
@@ -815,7 +814,7 @@ export function Composer({
   const linkedMentions = useLinkedMentionProjects({
     sessionId,
     checkoutCwd: localCwd,
-    enabled: !remote && (orchestrationActive || orchestratorRunActive),
+    enabled: !remote,
     pickerOpen: mentionOpen,
   });
   const mentionFiles = useMemo(
@@ -2666,19 +2665,14 @@ export function Composer({
                 }}
               />
             ) : null}
-            {!compact &&
-              !remote &&
-              !hideTopBar &&
-              sessionId &&
-              cwd &&
-              (orchestrationActive || orchestratorRunActive) && (
-                <OrchestrationProjects
-                  sessionId={sessionId}
-                  projectCwd={cwd}
-                  checkoutCwd={executionCwd}
-                  disabled={disabled || busy}
-                />
-              )}
+            {!compact && !remote && !hideTopBar && sessionId && cwd && (
+              <OrchestrationProjects
+                sessionId={sessionId}
+                projectCwd={cwd}
+                checkoutCwd={executionCwd}
+                disabled={disabled || busy}
+              />
+            )}
             {!compact && planActive ? (
               <ModeCommandPill
                 name={PLAN_COMMAND.name}

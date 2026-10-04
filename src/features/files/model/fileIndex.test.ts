@@ -3,7 +3,9 @@ import type { ProjectFile } from "../../../platform/tauri/fs";
 import { listProjectFiles } from "../../../platform/tauri/fs";
 import {
   invalidateProjectFiles,
+  loadLinkedProjectFiles,
   loadProjectFiles,
+  peekLinkedProjectFiles,
   peekProjectFiles,
   rememberOpenedFile,
   resolveFileOpenRequest,
@@ -182,5 +184,45 @@ describe("loadProjectFiles", () => {
 
     expect(await scan).toEqual(files);
     expect(peekProjectFiles(other)).toEqual(files);
+  });
+});
+
+describe("loadLinkedProjectFiles", () => {
+  beforeEach(() => {
+    invalidateProjectFiles();
+    list.mockReset();
+    list.mockResolvedValue(files);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    invalidateProjectFiles();
+  });
+
+  it("reuses a fresh index and walks the project again once it is stale", async () => {
+    vi.useFakeTimers({ now: 0 });
+    const root = "/Users/me/api";
+    await loadLinkedProjectFiles(root, 10_000);
+    list.mockResolvedValue([...files, extra]);
+
+    vi.setSystemTime(9_999);
+    expect(await loadLinkedProjectFiles(root, 10_000)).toEqual(files);
+    expect(list).toHaveBeenCalledTimes(1);
+
+    vi.setSystemTime(10_000);
+    expect(await loadLinkedProjectFiles(root, 10_000)).toEqual([...files, extra]);
+    expect(peekLinkedProjectFiles(root)).toEqual([...files, extra]);
+  });
+
+  it("keeps only the most recently used linked indexes", async () => {
+    const roots = Array.from({ length: 9 }, (_, index) => `/Users/me/linked-${index}`);
+    for (const root of roots.slice(0, 8)) await loadLinkedProjectFiles(root);
+    await loadLinkedProjectFiles(roots[0]);
+    await loadLinkedProjectFiles(roots[8]);
+
+    expect(peekLinkedProjectFiles(roots[0])).toEqual(files);
+    expect(peekLinkedProjectFiles(roots[1])).toBeNull();
+    expect(peekLinkedProjectFiles(roots[8])).toEqual(files);
+    expect(list).toHaveBeenCalledTimes(9);
   });
 });

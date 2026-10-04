@@ -700,6 +700,13 @@ export class Orchestrator {
     }
     return nameLinkedProjects(roots);
   }
+  /** Projects `@name:` mentions resolve to in any session: a live run's fixed
+   * set, otherwise the current selection. An invalid selection links nothing. */
+  async mentionProjects(sessionId: string, checkoutCwd: string): Promise<LinkedProject[]> {
+    const run = this.run(sessionId);
+    if (run?.status === "active" || run?.status === "paused") return run.linkedProjects ?? [];
+    return this.linkedProjects(sessionId, checkoutCwd).catch(() => []);
+  }
   async start(
     leadId: string,
     allowedHarnesses: HarnessId[],

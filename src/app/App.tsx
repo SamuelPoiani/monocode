@@ -6431,7 +6431,6 @@ function Workspace({
         void (async () => {
           try {
             const prepared = await prepareAttachments(attachments);
-            const run = orchestrator.run(sessionId);
             const prompt = await preparePrompt(
               harnessText,
               {
@@ -6439,9 +6438,7 @@ function Workspace({
                 sessionId,
                 cwd: initialWorkCwd,
               },
-              run?.status === "active" || run?.status === "paused"
-                ? run.linkedProjects
-                : undefined,
+              await orchestrator.mentionProjects(sessionId, initialWorkCwd),
             );
             await steerHarnessTurn({
               harness: current.harness,
@@ -7044,12 +7041,9 @@ function Workspace({
         let buildSucceeded = false;
         try {
           const prepared = await prepareAttachments(attachments);
-          const run = orchestrator.run(sessionId);
           const mentionProjects =
             proposalDraft?.linkedProjects ??
-            (run?.status === "active" || run?.status === "paused"
-              ? run.linkedProjects
-              : undefined);
+            (await orchestrator.mentionProjects(sessionId, workCwd));
           const prompt =
             intent === "build" && approvedPlan
               ? buildPlanPrompt(approvedPlan.text)

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Linked projects work in every local session, not only in orchestrator mode. Pick them from the composer's **Projects** menu, which shows the `@name:` of each project, and reference their files with `@name:path` to ask about another project, such as the backend while working in the frontend. The first reference in a conversation explains where the project lives and that its commands run from its own root; later references add only a short reminder. Orchestration runs still use the same selection to assign workers.
+- Reopening the `@` picker reuses linked project indexes from the last 10 seconds instead of walking every linked project again, and only the eight most recently used linked indexes stay in memory.
+
 ## [0.7.0] - 2026-10-02
 
 ### Added

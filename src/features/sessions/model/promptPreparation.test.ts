@@ -80,4 +80,32 @@ describe("preparePrompt", () => {
       cwd: "/repo",
     });
   });
+
+  it("introduces each linked project once per conversation", async () => {
+    mocks.applyFileMentionsToTurn.mockImplementation(
+      async (text: string) => text,
+    );
+    mocks.applySkillsToTurn.mockImplementation(async (text: string) => text);
+    const api = { name: "api", root: "/api" };
+    const firstMention = async (
+      context: Parameters<typeof preparePrompt>[1],
+    ) => {
+      await preparePrompt("see @api:", context, [api]);
+      const track = mocks.applyFileMentionsToTurn.mock.lastCall?.[3];
+      return track?.(api);
+    };
+
+    const session = {
+      harness: "pi",
+      cwd: "/repo",
+      sessionId: "intro",
+    } as const;
+    expect(await firstMention(session)).toBe(true);
+    expect(await firstMention(session)).toBe(false);
+    expect(await firstMention({ ...session, harness: "codex" })).toBe(true);
+    expect(await firstMention({ ...session, cwd: "/repo-worktree" })).toBe(
+      true,
+    );
+    expect(await firstMention({ harness: "pi", cwd: "/repo" })).toBeUndefined();
+  });
 });

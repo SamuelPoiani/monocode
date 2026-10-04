@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectFile } from "../../../platform/tauri/fs";
-import { loadProjectFiles } from "./fileIndex";
+import { loadLinkedProjectFiles, loadProjectFiles } from "./fileIndex";
 import {
   applyFileMentionsToTurn,
   buildMentionIndex,
@@ -18,10 +18,12 @@ vi.mock("./fileIndex", async (importOriginal) => {
   return {
     ...actual,
     loadProjectFiles: vi.fn(actual.loadProjectFiles),
+    loadLinkedProjectFiles: vi.fn(actual.loadLinkedProjectFiles),
   };
 });
 
 const list = vi.mocked(loadProjectFiles);
+const linkedList = vi.mocked(loadLinkedProjectFiles);
 
 const files: ProjectFile[] = [
   {
@@ -399,5 +401,60 @@ describe("applyFileMentionsToTurn", () => {
       "/p",
     );
     expect(out).toBe("look at @notes/read-me.md~2");
+  });
+
+  describe("linked projects", () => {
+    const api = { name: "api", root: "/api" };
+    const apiFiles: ProjectFile[] = [
+      { name: "routes.ts", path: "/api/src/routes.ts", relative: "src/routes.ts" },
+    ];
+
+    beforeEach(() => {
+      linkedList.mockReset();
+      linkedList.mockResolvedValue(apiFiles);
+    });
+
+    it("explains a linked project the first time the conversation references it", async () => {
+      const firstMention = vi.fn(() => true);
+      const out = await applyFileMentionsToTurn(
+        "what does @api:src/routes.ts return?",
+        "/p",
+        [api],
+        firstMention,
+      );
+      expect(out).toContain(
+        '- @api:src/routes.ts → /api/src/routes.ts (linked project "api", a separate project: run its commands from its root)',
+      );
+      expect(out).toContain(
+        'Linked project "api" is at /api, outside your working directory (/p).',
+      );
+      expect(firstMention).toHaveBeenCalledWith(api);
+    });
+
+    it("relies on the footer once the project was introduced", async () => {
+      const out = await applyFileMentionsToTurn(
+        "and @api: as a whole?",
+        "/p",
+        [api],
+        () => false,
+      );
+      expect(out).toContain(
+        '- @api: → /api (the whole linked project "api", its root directory; a separate project, run its commands from there)',
+      );
+      expect(out).not.toContain('Linked project "api" is at');
+    });
+
+    it("does not introduce a linked project the turn leaves out", async () => {
+      const firstMention = vi.fn(() => true);
+      const out = await applyFileMentionsToTurn(
+        "look at @docs/read-me.md",
+        "/p",
+        [api],
+        firstMention,
+      );
+      expect(out).not.toContain("Linked project");
+      expect(firstMention).not.toHaveBeenCalled();
+      expect(linkedList).not.toHaveBeenCalled();
+    });
   });
 });

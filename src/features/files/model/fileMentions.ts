@@ -53,7 +53,7 @@ const MAX_PICKER = 30;
 /** `api:src/x.ts` names a file of the linked project `api`. */
 const LINKED_PREFIX_RE = /^([a-z0-9_-]+):/;
 
-/** A project linked to an orchestration run, as `@name:path` mentions see it. */
+/** A project linked to a session, as `@name:path` mentions see it. */
 export type MentionProject = { name: string; root: string };
 type LinkedMentionFile = ProjectFile & {
   mentionProject?: string;
@@ -336,12 +336,15 @@ export function fileMentionsInText(
  * Spell out where each `@name` lives, so the harness does not have to guess
  * which `App.tsx` the user meant. Tokens already written as a project-relative
  * path need no help. A linked project's file is spelled out with its project
- * and absolute path, since it lives outside the current checkout.
+ * and absolute path, since it lives outside the current checkout. The first
+ * time a conversation references a linked project (`firstMention` says so), a
+ * short note explains how to work in it; later turns rely on the footer alone.
  */
 export async function applyFileMentionsToTurn(
   text: string,
   cwd: string,
   linked: MentionProject[] = [],
+  firstMention: (project: MentionProject) => boolean = () => false,
 ): Promise<string> {
   if (!looksMentioned(text)) return text;
   const [files, ...linkedFiles] = await Promise.all([
@@ -361,22 +364,39 @@ export async function applyFileMentionsToTurn(
   if (all.length === 0) return text;
 
   const index = buildMentionIndex(all);
-  const lines = fileMentionsInText(text, index.labels)
-    .filter(
-      (hit) => hit.label !== hit.file.relative || !!mentionProjectOf(hit.file),
-    )
-    .map((hit) => {
-      const project = mentionProjectOf(hit.file);
-      if (project && isLinkedProjectRoot(hit.file)) {
-        return `- @${hit.label} → ${hit.file.path} (the whole linked project "${project}", its root directory)`;
-      }
-      return project
-        ? `- @${hit.label} → ${hit.file.path} (linked project "${project}")`
-        : `- @${hit.label} → ${hit.file.relative}`;
-    });
+  const hits = fileMentionsInText(text, index.labels).filter(
+    (hit) => hit.label !== hit.file.relative || !!mentionProjectOf(hit.file),
+  );
+  const lines = hits.map((hit) => {
+    const project = mentionProjectOf(hit.file);
+    if (project && isLinkedProjectRoot(hit.file)) {
+      return `- @${hit.label} → ${hit.file.path} (the whole linked project "${project}", its root directory; a separate project, run its commands from there)`;
+    }
+    return project
+      ? `- @${hit.label} → ${hit.file.path} (linked project "${project}", a separate project: run its commands from its root)`
+      : `- @${hit.label} → ${hit.file.relative}`;
+  });
   if (lines.length === 0) return text;
 
-  return [text, "", "---", "Referenced with @ above:", ...lines].join("\n");
+  const mentioned = new Set(
+    hits.flatMap((hit) => mentionProjectOf(hit.file) ?? []),
+  );
+  const notes = linked
+    .filter((project) => mentioned.has(project.name) && firstMention(project))
+    .map((project) => linkedProjectNote(project, cwd));
+  return [
+    text,
+    "",
+    "---",
+    "Referenced with @ above:",
+    ...lines,
+    ...(notes.length ? ["", ...notes] : []),
+  ].join("\n");
+}
+
+/** How to work in a linked project, sent once per conversation. */
+function linkedProjectNote({ name, root }: MentionProject, cwd: string) {
+  return `Linked project "${name}" is at ${root}, outside your working directory (${cwd}). It is a separate project with its own Git repositories, dependencies and scripts: use absolute paths for its files and run its commands from its root. Git, package and test commands run in your working directory do not touch it.`;
 }
 
 /** Parent folders of indexed files, so `@` can point at a directory. */

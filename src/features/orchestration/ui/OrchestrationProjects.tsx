@@ -10,6 +10,7 @@ import { orchestrator } from "../model/orchestration";
 import {
   availableOrchestrationProjects,
   canonicalProjectRoot,
+  nameLinkedProjects,
   projectRootsOverlap,
   selectedOrchestrationProjects,
   setOrchestrationProjects,
@@ -44,6 +45,15 @@ export function OrchestrationProjects({
   const available = availableOrchestrationProjects(projectCwd, checkoutCwd);
   const selected = paths.filter((path) => available.some((root) => pathKey(root) === pathKey(path)));
   const count = linked?.length ?? selected.length;
+  // The `@name:` each project has, or would get if ticked next, named the same way as planning.
+  const selectedRoots = selected.flatMap((path) => projects.find((entry) => pathKey(entry.path) === pathKey(path))?.root ?? []);
+  const selectedNames = nameLinkedProjects(selectedRoots);
+  const mentionName = (root: string) => {
+    const index = selectedRoots.findIndex((entry) => pathKey(entry) === pathKey(root));
+    if (index >= 0) return selectedNames[index].name;
+    const named = nameLinkedProjects([...selectedRoots, root]);
+    return named[named.length - 1].name;
+  };
 
   useEffect(() => {
     const changed = () => setRevision((value) => value + 1);
@@ -114,14 +124,17 @@ export function OrchestrationProjects({
         >
           <p className="px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-content/40">Linked projects</p>
           <p className="px-2 pb-2 text-[11px] leading-4 text-content/45">
-            {locked ? "Projects are fixed for this run, including on resume." : "Allow this run to assign workers in other imported projects."}
+            {locked ? "Projects are fixed for this run, including on resume." : "Reference their files with @name: in any message. Orchestration runs can also assign workers there."}
           </p>
           <div className="min-h-0 overflow-y-auto overscroll-contain">
             {linked ? linked.map(({ name, root }) => (
               <div key={name} className="flex items-center gap-2 rounded-lg px-2 py-2">
                 <Check className="size-3.5 shrink-0 text-fuchsia-300/80" />
                 <span className="min-w-0">
-                  <span className="block truncate text-[13px] text-content">{name}</span>
+                  <span className="block truncate text-[13px] text-content">
+                    {projectName(root)}
+                    <span className="ml-1.5 font-mono text-[11px] text-content/45">@{name}:</span>
+                  </span>
                   <span title={root} className="block truncate text-[11px] text-content/45">{root}</span>
                 </span>
               </div>
@@ -148,7 +161,10 @@ export function OrchestrationProjects({
                     {checked && <Check className="size-3 text-fuchsia-300/80" />}
                   </span>
                   <span className="min-w-0">
-                    <span className="block truncate text-[13px] text-content">{projectName(root)}</span>
+                    <span className="block truncate text-[13px] text-content">
+                      {projectName(root)}
+                      <span className="ml-1.5 font-mono text-[11px] text-content/45">@{mentionName(root)}:</span>
+                    </span>
                     <span className="block truncate text-[11px] text-content/45">{root}</span>
                   </span>
                 </button>

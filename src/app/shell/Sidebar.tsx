@@ -45,6 +45,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type RefObject,
 } from "react";
 import {
   loadSidebarTabOrder,
@@ -61,6 +62,7 @@ import { copyText } from "../../platform/tauri/clipboard";
 import { resolveModel } from "../../features/sessions/model/models";
 import type { OpenFileFn } from "../../features/search/model/search";
 import { sessionDisplayTitle } from "../../features/sessions/model/session";
+import { ParticleText } from "../../shared/ui/ParticleText";
 import { nextUnseenFinishedSessions } from "../../features/sessions/model/sessionDone";
 import { orchestrationTaskLabel } from "../../features/orchestration/model/orchestrationSummary";
 import {
@@ -155,6 +157,7 @@ import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
 import { LiveAgentsPreview } from "../../features/sessions/ui/LiveAgentsPreview";
 import { ProjectRail } from "./ProjectRail";
 import { InboxNotificationMenu } from "../../features/inbox/ui/InboxNotificationMenu";
+import { prefetchGithubWorkItem } from "../../features/inbox/model/githubTasks";
 import { RailAction } from "./RailAction";
 import { TerminalSpinner } from "../../features/sessions/ui/TerminalSpinner";
 import { WorkspaceTitleActions } from "../../features/projects/ui/ProjectActionsButton";
@@ -1471,6 +1474,18 @@ function SidebarComponent({
     [],
   );
 
+  const sessionInsertMotion = useRef<SessionInsertMotion>({
+    cwd: "",
+    seen: new Set(),
+  });
+  // Runs after the rows' mount effects: a project's first paint never animates,
+  // and rows that mount later (drawer opened, folder expanded) are not new.
+  useLayoutEffect(() => {
+    const motion = sessionInsertMotion.current;
+    motion.cwd = cwd;
+    for (const session of listedSessions) motion.seen.add(session.id);
+  });
+
   const renderSessionCard = (session: SessionSummary, compact = false) =>
     renamingSessionId === session.id && onRenameSession ? (
       <SessionRenameRow
@@ -1619,6 +1634,39 @@ function SidebarComponent({
     );
   });
 
+  // The compact layout keeps these actions in its nav row (or the title bar),
+  // so its header carries only the working-copy switcher.
+  const renderWorkspaceHeader = (withActions: boolean) => (
+    <div
+      className="flex h-10 shrink-0 select-none items-center gap-1 border-b border-stroke pl-3 pr-1.5"
+      data-tauri-drag-region="deep"
+    >
+      <div className="flex min-w-0 flex-1 items-center">
+        {!remoteProject && cwd && cwd !== "~" ? (
+          <SidebarWorktreeSwitcher
+            cwd={cwd}
+            tabStats={worktreeTabStats}
+            onSelect={onSelectWorkspace}
+            pending={workspaceSwitchPending}
+            switchError={workspaceSwitchError}
+          />
+        ) : (
+          <span className="min-w-0 truncate text-sm font-medium leading-tight">
+            Workspace
+          </span>
+        )}
+      </div>
+      {withActions ? (
+        <WorkspaceTitleActions
+          project={projectActionsCwd ?? cwd}
+          onSearch={onGoToFile}
+          onNew={onNew}
+          onRunAction={onRunProjectAction}
+        />
+      ) : null}
+    </div>
+  );
+
   const sidebarContent = (
     <aside
       ref={resize.setPaneRef}
@@ -1626,32 +1674,7 @@ function SidebarComponent({
     >
       {railVisible ? (
         <>
-          <div
-            className="flex h-10 shrink-0 select-none items-center gap-1 border-b border-stroke pl-3 pr-1.5"
-            data-tauri-drag-region="deep"
-          >
-            <div className="flex min-w-0 flex-1 items-center">
-              {!remoteProject && cwd && cwd !== "~" ? (
-                <SidebarWorktreeSwitcher
-                  cwd={cwd}
-                  tabStats={worktreeTabStats}
-                  onSelect={onSelectWorkspace}
-                  pending={workspaceSwitchPending}
-                  switchError={workspaceSwitchError}
-                />
-              ) : (
-                <span className="min-w-0 truncate text-sm font-medium leading-tight">
-                  Workspace
-                </span>
-              )}
-            </div>
-            <WorkspaceTitleActions
-              project={projectActionsCwd ?? cwd}
-              onSearch={onGoToFile}
-              onNew={onNew}
-              onRunAction={onRunProjectAction}
-            />
-          </div>
+          {renderWorkspaceHeader(true)}
           <div
             role="tablist"
             aria-label="Workspace"
@@ -1688,6 +1711,7 @@ function SidebarComponent({
               ) : null}
             </div>
           )}
+          {compactRailVisible ? renderWorkspaceHeader(false) : null}
           {onSelectProject && !compactRailVisible ? (
             <SidebarProjectPicker
               cwd={cwd}
@@ -1775,7 +1799,7 @@ function SidebarComponent({
             sessionsLock(el);
             sessionsScrollRef.current = el;
           }}
-          className={`min-h-0 flex-1 overflow-y-auto overscroll-none ${
+          className={`sidebar-session-scroll min-h-0 flex-1 overflow-y-auto overscroll-none ${
             tab === "sessions" ? "" : "hidden"
           }`}
         >
@@ -1815,7 +1839,7 @@ function SidebarComponent({
                   <SessionsEmpty message="Sessions you start will show up here" />
                 )
               ) : (
-                <ul className="flex flex-col gap-0.5 p-1.5">
+                <ul data-session-list className="flex flex-col gap-0.5 p-1.5 pb-10">
                   {sessionListEntries.map((entry, index) => {
                     if (entry.kind === "pinned" || entry.kind === "reminders") {
                       const isReminders = entry.kind === "reminders";
@@ -1881,9 +1905,14 @@ function SidebarComponent({
                             {expanded ? (
                               <ul className="flex flex-col gap-px p-1">
                                 {entry.sessions.map((session) => (
-                                  <li key={session.id}>
+                                  <SessionListItem
+                                    key={session.id}
+                                    session={session}
+                                    cwd={cwd}
+                                    motion={sessionInsertMotion}
+                                  >
                                     {renderSessionCard(session, true)}
-                                  </li>
+                                  </SessionListItem>
                                 ))}
                               </ul>
                             ) : null}
@@ -2007,9 +2036,14 @@ function SidebarComponent({
                               <>
                                 <ul className="flex flex-col gap-px p-1">
                                   {entry.sessions.map((session) => (
-                                    <li key={session.id}>
+                                    <SessionListItem
+                                      key={session.id}
+                                      session={session}
+                                      cwd={cwd}
+                                      motion={sessionInsertMotion}
+                                    >
                                       {renderSessionCard(session, true)}
-                                    </li>
+                                    </SessionListItem>
                                   ))}
                                 </ul>
                                 {onNew ? (
@@ -2042,9 +2076,14 @@ function SidebarComponent({
                       );
                     }
                     return (
-                      <li key={entry.session.id}>
+                      <SessionListItem
+                        key={entry.session.id}
+                        session={entry.session}
+                        cwd={cwd}
+                        motion={sessionInsertMotion}
+                      >
                         {renderSessionCard(entry.session)}
-                      </li>
+                      </SessionListItem>
                     );
                   })}
                   {hasMoreSessions ? (
@@ -2956,6 +2995,81 @@ function FolderRenameRow({
 }
 
 const SESSION_PREFETCH_DELAY_MS = 120;
+/** Rows created this recently slide in; older ones are just being listed. */
+const SESSION_INSERT_WINDOW_MS = 15_000;
+
+type SessionInsertMotion = { cwd: string; seen: Set<string> };
+
+/** List row that grows open when a new session lands, pushing rows below it down. */
+function SessionListItem({
+  session,
+  cwd,
+  motion,
+  children,
+}: {
+  session: SessionSummary;
+  cwd: string;
+  motion: RefObject<SessionInsertMotion>;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLLIElement>(null);
+  // Decided once per row: effects can replay (StrictMode, reordering), and a
+  // row that already slid in must not do it again.
+  const played = useRef(false);
+  useLayoutEffect(() => {
+    if (played.current) return;
+    played.current = true;
+    const state = motion.current;
+    const fresh =
+      state.cwd === cwd &&
+      !state.seen.has(session.id) &&
+      (session.createdAt === 0 ||
+        Date.now() - session.createdAt < SESSION_INSERT_WINDOW_MS);
+    state.seen.add(session.id);
+    const el = ref.current;
+    const content = el?.firstElementChild;
+    if (
+      !fresh ||
+      !el ||
+      !(content instanceof HTMLElement) ||
+      typeof el.animate !== "function" ||
+      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+    )
+      return;
+    // The card takes its place at once; everything below starts where it was
+    // and slides down, uncovering it as it fades in.
+    const offset =
+      el.offsetHeight +
+      (parseFloat(getComputedStyle(el.parentElement ?? el).rowGap) || 0);
+    const timing = {
+      duration: 380,
+      easing: "cubic-bezier(0.32, 0.72, 0, 1)",
+    };
+    for (
+      let node: Element | null = el;
+      node && !node.hasAttribute("data-session-list");
+      node = node.parentElement
+    ) {
+      for (
+        let below = node.nextElementSibling;
+        below;
+        below = below.nextElementSibling
+      ) {
+        if (!(below instanceof HTMLElement)) continue;
+        below.animate(
+          [{ transform: `translateY(${-offset}px)` }, { transform: "none" }],
+          // Stack with a push already in flight instead of restarting it.
+          { ...timing, composite: "add" },
+        );
+      }
+    }
+    content.animate([{ opacity: 0 }, { opacity: 1 }], {
+      duration: 220,
+      easing: "ease-out",
+    });
+  }, []);
+  return <li ref={ref}>{children}</li>;
+}
 
 const SessionCard = memo(function SessionCard({
   session,
@@ -3083,6 +3197,11 @@ const SessionCard = memo(function SessionCard({
       data-tauri-drag-region="false"
       title={`Open ${linkedWorkItem.kind === "pr" ? "PR" : "issue"} #${linkedWorkItem.number} beside this session (${MOD}-click for GitHub)`}
       aria-label={`Open ${linkedWorkItem.kind === "pr" ? "PR" : "issue"} #${linkedWorkItem.number}`}
+      onPointerEnter={() => {
+        // Hover usually precedes the click by a few hundred ms, which is
+        // most of what the panel would otherwise spend waiting on GitHub.
+        if (onOpenWorkItem) prefetchGithubWorkItem(session.cwd, linkedWorkItem);
+      }}
       onPointerDown={(event) => event.stopPropagation()}
       onClick={(event) => {
         event.preventDefault();
@@ -3361,9 +3480,10 @@ const SessionCard = memo(function SessionCard({
                 strokeWidth={1.75}
               />
             ) : null}
-            <span className="min-w-0 flex-1 line-clamp-1 text-[13px] font-semibold leading-snug text-content">
-              {title}
-            </span>
+            <ParticleText
+              text={title}
+              className="line-clamp-1 text-[13px] font-semibold leading-snug text-content"
+            />
             {compact && !orchestrationExpanded ? (
               <span className="flex shrink-0 items-center gap-1.5">
                 {linkedUpdateDot}
@@ -3600,6 +3720,44 @@ function DiffStat({
   additions: number;
   deletions: number;
 }) {
+  const containerRef = useRef<HTMLSpanElement>(null);
+  const contentRef = useRef<HTMLSpanElement>(null);
+
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    const content = contentRef.current;
+    if (!container || !content) return;
+
+    const fit = () => {
+      const availableWidth = container.getBoundingClientRect().width;
+      if (availableWidth <= 0) return;
+
+      // Measure at the normal size so the text can grow again after resizing.
+      let maxFontSize = 11;
+      content.style.fontSize = `${maxFontSize}px`;
+      if (content.getBoundingClientRect().width <= availableWidth) return;
+
+      // Font metrics can change at small sizes, so check the rendered width.
+      let minFontSize = 0;
+      while (maxFontSize - minFontSize > 0.1) {
+        const fontSize = (minFontSize + maxFontSize) / 2;
+        content.style.fontSize = `${fontSize}px`;
+        if (content.getBoundingClientRect().width > availableWidth) {
+          maxFontSize = fontSize;
+        } else {
+          minFontSize = fontSize;
+        }
+      }
+      content.style.fontSize = `${minFontSize}px`;
+    };
+
+    fit();
+    // Sidebar dragging writes its width directly to the DOM, without a render.
+    const observer = new ResizeObserver(fit);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [additions, deletions]);
+
   if (additions <= 0 && deletions <= 0) return null;
 
   const label = [
@@ -3611,19 +3769,25 @@ function DiffStat({
 
   return (
     <span
+      ref={containerRef}
       title={`${label} uncommitted`}
-      className="flex shrink-0 items-center gap-1.5 font-sans text-[11px] font-semibold tabular-nums"
+      className="flex h-full w-full min-w-0 items-center justify-center overflow-hidden"
     >
-      {additions > 0 ? (
-        <span className="text-emerald-400">
-          +<TightDiffNumber value={additions} />
-        </span>
-      ) : null}
-      {deletions > 0 ? (
-        <span className="text-red-400">
-          -<TightDiffNumber value={deletions} />
-        </span>
-      ) : null}
+      <span
+        ref={contentRef}
+        className="flex shrink-0 items-center gap-[0.55em] whitespace-nowrap font-sans text-[11px] font-semibold tabular-nums"
+      >
+        {additions > 0 ? (
+          <span className="text-diff-add-fg">
+            +<TightDiffNumber value={additions} />
+          </span>
+        ) : null}
+        {deletions > 0 ? (
+          <span className="text-diff-del-fg">
+            -<TightDiffNumber value={deletions} />
+          </span>
+        ) : null}
+      </span>
     </span>
   );
 }

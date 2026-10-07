@@ -3,14 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as settings from "./settings";
 import * as appearance from "./appearance";
 
-const platform = vi.hoisted(() => ({ isWindows: true }));
-vi.mock("../../../platform/tauri/platform", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../platform/tauri/platform")>()),
-  get IS_WIN() {
-    return platform.isWindows;
-  },
-}));
-
 function memoryStorage(): Storage {
   const values = new Map<string, string>();
   return {
@@ -29,7 +21,6 @@ function memoryStorage(): Storage {
 
 beforeEach(() => {
   vi.stubGlobal("localStorage", memoryStorage());
-  platform.isWindows = true;
 });
 
 afterEach(() => {
@@ -72,13 +63,6 @@ describe.each([
     settings.saveMonosEnabled,
     true,
     "monocode:monos-enabled-change",
-  ],
-  [
-    "monocode.closeToTray",
-    settings.loadCloseToTray,
-    settings.saveCloseToTray,
-    true,
-    undefined,
   ],
   [
     "monocode.gridArcadeEnabled",
@@ -192,13 +176,4 @@ describe.each([
     save(!fallback);
     expect(load()).toBe(!fallback);
   });
-});
-
-it("disables close-to-tray outside Windows without consulting storage", () => {
-  platform.isWindows = false;
-  settings.saveCloseToTray(true);
-  const read = vi.spyOn(localStorage, "getItem");
-
-  expect(settings.loadCloseToTray()).toBe(false);
-  expect(read).not.toHaveBeenCalled();
 });

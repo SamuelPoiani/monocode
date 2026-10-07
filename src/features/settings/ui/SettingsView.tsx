@@ -311,7 +311,6 @@ import {
   filterKeybindings,
   currentKeybindings,
   loadClaudeHooks,
-  loadCloseToTray,
   loadCollapsedProjectRailMode,
   loadComposerRunner,
   loadDiffViewer,
@@ -328,7 +327,6 @@ import {
   loadQuickComposerShortcut,
   loadTabAnimationsEnabled,
   saveClaudeHooks,
-  saveCloseToTray,
   saveCollapsedProjectRailMode,
   saveComposerRunner,
   saveDiffViewer,
@@ -764,7 +762,6 @@ function GeneralPage({
   const [tabAnimationsEnabled, setTabAnimationsEnabled] = useState(
     loadTabAnimationsEnabled,
   );
-  const [closeToTray, setCloseToTray] = useState(loadCloseToTray);
   const [quickComposerEnabled, setQuickComposerEnabled] = useState(
     loadQuickComposerEnabled,
   );
@@ -825,11 +822,6 @@ function GeneralPage({
   const onTabAnimationsEnabled = (next: boolean) => {
     saveTabAnimationsEnabled(next);
     setTabAnimationsEnabled(next);
-  };
-
-  const onCloseToTray = (next: boolean) => {
-    saveCloseToTray(next);
-    setCloseToTray(next);
   };
 
   return (
@@ -936,19 +928,6 @@ function GeneralPage({
             onChange={onLiveAgentsEnabled}
           />
         </Row>
-        {IS_WIN && (
-          <Row
-            id="close-to-tray"
-            label="Close to tray"
-            description="Closing a window hides it to the system tray instead of quitting, so running agents keep going. Reopen from the tray icon, and quit for real from its menu. Turn this off to have close end the window."
-          >
-            <Toggle
-              label="Close to tray"
-              on={closeToTray}
-              onChange={onCloseToTray}
-            />
-          </Row>
-        )}
       </Group>
 
       <Group title="About">

@@ -1480,9 +1480,17 @@ fn terminate_after(pid: u32, escalate: Duration) {
 /// SIGTERM every tree, then SIGKILL whatever is still standing, before return.
 pub(crate) fn terminate_all(pids: &[u32]) {
     let pids: Vec<u32> = pids.iter().copied().filter(|pid| *pid > 1).collect();
+    // Every `taskkill` at once: one after another, each tree cost its own
+    // process launch, and closing with many chats waited on all of them.
     #[cfg(windows)]
-    for pid in pids {
-        signal_tree(pid, TreeSignal::Kill);
+    {
+        let running: Vec<_> = pids
+            .iter()
+            .filter_map(|pid| taskkill_tree(*pid).spawn().ok())
+            .collect();
+        for mut child in running {
+            let _ = child.wait();
+        }
     }
     #[cfg(not(windows))]
     {
@@ -1548,18 +1556,23 @@ fn signal_tree(pid: u32, signal: TreeSignal) {
     #[cfg(windows)]
     {
         let _ = signal;
-        let mut cmd = Command::new("taskkill");
-        crate::hide_window_console(&mut cmd);
-        cmd.args(["/PID", &pid.to_string(), "/T", "/F"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let _ = cmd.status();
+        let _ = taskkill_tree(pid).status();
     }
     #[cfg(not(any(unix, windows)))]
     {
         let _ = signal;
         let _ = Command::new("kill").arg(pid.to_string()).status();
     }
+}
+
+#[cfg(windows)]
+fn taskkill_tree(pid: u32) -> Command {
+    let mut cmd = Command::new("taskkill");
+    crate::hide_window_console(&mut cmd);
+    cmd.args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    cmd
 }
 
 #[cfg(not(windows))]

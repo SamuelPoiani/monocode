@@ -288,7 +288,7 @@ export function useInboxActivity(
 
     void pull(false);
     const stopSelfActivity = subscribeInboxSelfActivity(() => void pull(true));
-    // Automation triggers still run in the tray, at a slower cadence. Resume
+    // Automation triggers still run while hidden, at a slower cadence. Resume
     // events share the cadence so frequent focus changes cannot flood GitHub.
     const poll = () => {
       if (pulling) return;

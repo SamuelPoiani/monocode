@@ -244,8 +244,11 @@ pub fn session_upsert(
         return Err("blocks must be an array".into());
     }
 
+    // Outside the lock: saves of sessions in other worktrees must not queue
+    // behind this one's git subprocesses.
+    let git = session_git_info(&session);
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    let summary = upsert_session(&conn, &session).map_err(|e| e.to_string())?;
+    let summary = upsert_session_with_git(&conn, &session, git).map_err(|e| e.to_string())?;
     Ok(summary)
 }
 
@@ -1113,9 +1116,31 @@ fn orchestration_summary(conn: &Connection, id: &str) -> rusqlite::Result<Option
     ))
 }
 
+/// Up to three `git` subprocesses on a cache miss. Callers holding the store
+/// lock should resolve this first and use `upsert_session_with_git`, or every
+/// queued save waits behind someone else's git.
+pub(crate) fn session_git_info(session: &SessionUpsert) -> crate::fs::GitInfo {
+    crate::fs::git_info_for(&crate::fs::expand_home(
+        session
+            .worktree_cwd
+            .as_deref()
+            .filter(|cwd| !cwd.is_empty())
+            .unwrap_or(&session.cwd),
+    ))
+}
+
+#[cfg(test)]
 pub(crate) fn upsert_session(
     conn: &Connection,
     session: &SessionUpsert,
+) -> rusqlite::Result<SessionSummary> {
+    upsert_session_with_git(conn, session, session_git_info(session))
+}
+
+pub(crate) fn upsert_session_with_git(
+    conn: &Connection,
+    session: &SessionUpsert,
+    git: crate::fs::GitInfo,
 ) -> rusqlite::Result<SessionSummary> {
     let now = now_millis();
     let model_settings = serde_json::to_string(&session.model_settings)
@@ -1146,13 +1171,6 @@ pub(crate) fn upsert_session(
         .as_ref()
         .map(|value| value.trim())
         .filter(|value| !value.is_empty());
-    let git = crate::fs::git_info_for(&crate::fs::expand_home(
-        session
-            .worktree_cwd
-            .as_deref()
-            .filter(|cwd| !cwd.is_empty())
-            .unwrap_or(&session.cwd),
-    ));
     let branch = if session.worktree_removed {
         None
     } else {

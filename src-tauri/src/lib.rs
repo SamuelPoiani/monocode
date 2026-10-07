@@ -45,8 +45,6 @@ mod search;
 mod session_store;
 mod skills;
 pub mod ssh_askpass;
-#[cfg(target_os = "windows")]
-mod tray;
 mod window;
 mod window_transfer;
 #[cfg(windows)]
@@ -238,8 +236,6 @@ pub fn run() {
             reminders::init(app.handle());
             checkpoint::init(app.handle())?;
             menu::install(app.handle())?;
-            #[cfg(target_os = "windows")]
-            tray::install(app.handle())?;
             #[cfg(target_os = "macos")]
             {
                 quick_composer::init(app.handle())?;

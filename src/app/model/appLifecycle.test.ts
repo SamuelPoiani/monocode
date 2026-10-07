@@ -475,7 +475,7 @@ describe("remembering the terminal dock side across restarts", () => {
     }
   });
 
-  it("saves the side through unload persistence used by reload and tray close", async () => {
+  it("saves the side through unload persistence used by reload and window close", async () => {
     const state = dockWorkspace("left");
     const { persistQuitState } = await import("./appLifecycle");
     await persistQuitState(

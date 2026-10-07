@@ -30,6 +30,8 @@ import {
   listInFlightSessions,
   listSessionsByProject,
   loadWorkspaceSnapshot,
+  persistedFingerprints,
+  persistFingerprint,
   replaceInFlightSessions,
   saveWorkspaceSnapshot,
   shouldPersistSession,
@@ -401,7 +403,12 @@ export async function persistQuitState(
       const payload = interrupted.has(session.id)
         ? markTurnInterrupted(session)
         : session;
-      await write(upsertSession(payload));
+      // Rewriting an already-saved session re-serializes its whole transcript
+      // under the store lock, which made quitting with many chats slow.
+      const fingerprint = persistFingerprint(payload);
+      if (persistedFingerprints.get(session.id) === fingerprint) return;
+      const saved = await write(upsertSession(payload));
+      if (saved) persistedFingerprints.set(session.id, fingerprint);
     }),
   );
   await write(

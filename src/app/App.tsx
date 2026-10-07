@@ -498,6 +498,7 @@ import {
   getSession,
   listLinkedSessions,
   listSessionsByProject,
+  persistedFingerprints,
   persistFingerprint,
   rebaseProjectSessions,
   replaceInFlightSessions,
@@ -712,7 +713,6 @@ import {
   peekAzureDevOpsWorkItemDetails,
 } from "../features/inbox/model/azureDevOps";
 import {
-  loadCloseToTray,
   loadAutosave,
   loadCollapsedProjectRailMode,
   loadFileTabMode,
@@ -1560,7 +1560,7 @@ function Workspace({
   });
   const turnGen = useRef(new Map<string, number>());
   const editedResends = useRef(createEditedResendCoordinator()).current;
-  const lastPersisted = useRef(new Map<string, string>());
+  const lastPersisted = useRef(persistedFingerprints);
   const lastBoundProvider = useRef(new Map<string, string>());
   const lastPersistedUserBlock = useRef(new Map<string, string>());
   const inFlightSyncKey = useRef<string | null>(null);
@@ -2165,10 +2165,9 @@ function Workspace({
           void hideCurrentWindow();
           return;
         }
-        const toTray = loadCloseToTray();
         if (hasInFlightSessions(sessionsRef.current)) {
           flushHarnessEvents();
-          if (!toTray && !IS_MAC) {
+          if (!IS_MAC) {
             void closeBusyWindow();
             return;
           }
@@ -2188,7 +2187,7 @@ function Workspace({
           lastDockSideRef.current ?? undefined,
           keepWorkspaceTab,
         ).finally(() => {
-          void (toTray ? hideCurrentWindow() : closeCurrentWindow());
+          void closeCurrentWindow();
         });
       })
       .then((fn) => {

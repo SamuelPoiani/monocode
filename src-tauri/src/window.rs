@@ -403,8 +403,8 @@ pub fn quit_poll_reply(app: AppHandle, window: WebviewWindow, id: u32, in_flight
     }
 }
 
-/// Bring a parked dialog back into view. The run cannot be restarted, and with
-/// close-to-tray the user cannot close that window to clear it either.
+/// Bring a parked dialog back into view. The run cannot be restarted, and a
+/// hidden window cannot be closed to clear it either.
 fn resurface_prompt(app: &AppHandle) {
     let label = {
         let guard = QUIT_RUN.lock().unwrap();
@@ -491,8 +491,8 @@ fn start_confirm(app: &AppHandle, id: u32) {
         confirm_quit(app.clone());
         return;
     }
-    // Tray Quit arrives with every window hidden, and a dialog parented to a
-    // hidden window cannot be answered.
+    // A quit can arrive with every window hidden (macOS hides busy windows on
+    // close), and a dialog parented to a hidden window cannot be answered.
     let _ = show_hidden_or_open_new(app);
     let replied = {
         let guard = QUIT_RUN.lock().unwrap();

@@ -480,6 +480,13 @@ export function persistFingerprint(session: Session): string {
     .join(",")}`;
 }
 
+/**
+ * `persistFingerprint` of each session as last written to, or loaded from, the
+ * store by this window. Autosave and the quit flush share it so quitting only
+ * rewrites sessions autosave has not already saved.
+ */
+export const persistedFingerprints = new Map<string, string>();
+
 export async function listSessionsByProject(
   cwd: string,
 ): Promise<SessionSummary[]> {
@@ -757,6 +764,7 @@ export async function deleteSession(
       invoke<void>("session_delete", { sessionId, imagePaths }),
     );
     monoSavedBlocks.delete(sessionId);
+    persistedFingerprints.delete(sessionId);
     const tombstone = setTimeout(
       () => deletedSessionIds.delete(sessionId),
       60_000,

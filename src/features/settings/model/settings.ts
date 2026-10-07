@@ -1,7 +1,6 @@
 import {
   ALT,
   IS_MAC,
-  IS_WIN,
   MOD,
   SHIFT,
 } from "../../../platform/tauri/platform";
@@ -255,16 +254,6 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "Tab animations",
     keywords: "motion open close resize transition",
   },
-  ...(IS_WIN
-    ? [
-        {
-          id: "close-to-tray",
-          section: "general" as const,
-          label: "Close to tray",
-          keywords: "minimize background quit exit window taskbar windows",
-        },
-      ]
-    : []),
   {
     id: "theme",
     section: "appearance",
@@ -878,19 +867,6 @@ export function subscribeLiveAgentsEnabled(onStoreChange: () => void) {
     window.removeEventListener(LIVE_AGENTS_ENABLED_CHANGE_EVENT, onStoreChange);
 }
 
-const CLOSE_TO_TRAY_KEY = "monocode.closeToTray";
-
-export const CLOSE_TO_TRAY_DEFAULT = true;
-
-export function loadCloseToTray(): boolean {
-  // Close to tray is Windows-only: nowhere else installs a tray icon.
-  if (!IS_WIN) return false;
-  return readFlag(CLOSE_TO_TRAY_KEY) ?? CLOSE_TO_TRAY_DEFAULT;
-}
-
-export function saveCloseToTray(value: boolean) {
-  writeFlag(CLOSE_TO_TRAY_KEY, value);
-}
 
 const GRID_ARCADE_ENABLED_KEY = "monocode.gridArcadeEnabled";
 

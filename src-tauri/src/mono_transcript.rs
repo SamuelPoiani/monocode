@@ -329,12 +329,13 @@ fn upsert_with_mode(
     from: Option<&str>,
     changed: bool,
     append_only: bool,
+    git: crate::fs::GitInfo,
 ) -> rusqlite::Result<SessionSummary> {
     migrate_transcript(conn, &session.id)?;
     let tx = conn.unchecked_transaction()?;
     let mut header = session.clone();
     header.blocks = json!([]);
-    let mut summary = session_store::upsert_session(&tx, &header)?;
+    let mut summary = session_store::upsert_session_with_git(&tx, &header, git)?;
     tx.execute(
         "INSERT OR IGNORE INTO mono_transcripts(session_id) VALUES (?1)",
         [&session.id],
@@ -424,6 +425,8 @@ pub fn mono_session_upsert(
     {
         return Err("Invalid Mono session".into());
     }
+    // Before the lock, like `session_upsert`: git can take a while on Windows.
+    let git = session_store::session_git_info(&session);
     let conn = store.lock_conn()?;
     upsert_with_mode(
         &conn,
@@ -432,6 +435,7 @@ pub fn mono_session_upsert(
         from_block_id.as_deref(),
         blocks_changed,
         append_only,
+        git,
     )
     .map_err(|e| e.to_string())
 }
@@ -450,7 +454,8 @@ mod tests {
         from: Option<&str>,
         changed: bool,
     ) -> rusqlite::Result<SessionSummary> {
-        upsert_with_mode(conn, session, after, from, changed, false)
+        let git = session_store::session_git_info(session);
+        upsert_with_mode(conn, session, after, from, changed, false, git)
     }
 
     fn sample(id: &str, turns: usize) -> SessionUpsert {
@@ -659,7 +664,8 @@ mod tests {
         session.blocks = json!([]);
         upsert(&conn, &session, None, Some("u10"), true).unwrap();
         session.blocks = json!([{ "id":"fresh", "role":"user", "text":"Fresh" }]);
-        upsert_with_mode(&conn, &session, None, None, true, true).unwrap();
+        let git = session_store::session_git_info(&session);
+        upsert_with_mode(&conn, &session, None, None, true, true, git).unwrap();
         assert_eq!(
             page(&conn, "mono", None, Some("a0")).unwrap().blocks[1]["text"],
             "Answer 0"
